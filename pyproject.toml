@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "indusbuilt"
+version = "1.0.3"
+description = "IndusBuilt – an AI CLI coding agent powered by OpenAI, sandboxed to your project directory."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+  {name = "IndusBuilt"}
+]
+keywords = ["ai", "coding-agent", "openai", "cli", "developer-tools"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Console",
+  "Topic :: Software Development :: Code Generators",
+]
+dependencies = [
+  "openai>=1.30.0",
+  "litellm>=1.57.0",
+  "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+indusbuilt = "indusbuilt.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["indusbuilt*"]
