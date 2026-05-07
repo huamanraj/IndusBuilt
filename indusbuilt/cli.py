@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from .agent import run_agent
+from . import __version__
 from .settings import load_settings
 
 
@@ -17,7 +18,7 @@ def main():
     parser.add_argument(
         "--version", "-v",
         action="version",
-        version="IndusBuilt 1.0.3",
+        version=f"IndusBuilt {__version__}",
     )
     parser.parse_args()
 

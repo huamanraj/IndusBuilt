@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from litellm import completion
+from .context_manager import ContextManager
 from .settings import (
     MODEL_CHOICES,
     PROVIDERS,
@@ -59,7 +60,12 @@ def resolve_sandboxed_path(path_str: str, sandbox_root: Path) -> Path:
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
-def make_tools(sandbox_root: Path, skill_registry: Optional[SkillRegistry] = None):
+def make_tools(
+    sandbox_root: Path,
+    skill_registry: Optional[SkillRegistry] = None,
+    context_manager: Optional[ContextManager] = None,
+    conversation_ref: Optional[List[Dict[str, Any]]] = None,
+):
     """Returns the core tools bound to a sandbox_root."""
 
     def read_file_tool(filename: str) -> Dict[str, Any]:
@@ -150,6 +156,17 @@ def make_tools(sandbox_root: Path, skill_registry: Optional[SkillRegistry] = Non
     if skill_registry is not None:
         tools["activate_skill"] = skill_registry.activate
 
+    if context_manager is not None:
+        tools["save_memory"] = context_manager.save_memory
+        tools["search_memory"] = context_manager.search_memory
+        tools["retrieve_code"] = context_manager.retrieve_code
+        tools["offload_large_output"] = context_manager.offload_large_output
+
+        def summarize_session_tool(reason: str = "") -> Dict[str, Any]:
+            return context_manager.summarize_session(conversation_ref or [], reason=reason or None)
+
+        tools["summarize_session"] = summarize_session_tool
+
     return tools
 
 
@@ -216,11 +233,95 @@ CORE_OPENAI_TOOLS = [
     }
 ]
 
+MEMORY_OPENAI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": "Store important knowledge in local markdown memory files and index it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_type": {"type": "string", "description": "Type category, e.g. bug, decision, architecture."},
+                    "topic": {"type": "string", "description": "Topic slug or short topic name."},
+                    "summary": {"type": "string", "description": "Short summary to store and index."},
+                    "content": {"type": "string", "description": "Optional detailed notes."},
+                },
+                "required": ["memory_type", "topic", "summary"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_memory",
+            "description": "Search previously stored local memory and return only relevant summaries.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query."},
+                    "limit": {"type": "integer", "description": "Maximum result count.", "minimum": 1, "maximum": 20},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "summarize_session",
+            "description": "Compress current conversation context into a rolling session summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "description": "Optional reason for summarization."}
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_code",
+            "description": "Retrieve relevant code snippets for a query from the sandbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What code to retrieve."},
+                    "limit": {"type": "integer", "description": "Maximum snippets to return.", "minimum": 1, "maximum": 20},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "offload_large_output",
+            "description": "Persist large output to disk and keep only a compact preview in context.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Label for the saved output."},
+                    "content": {"type": "string", "description": "Large output content to offload."},
+                },
+                "required": ["name", "content"],
+            },
+        },
+    },
+]
 
-def build_openai_tools(skill_registry: Optional[SkillRegistry] = None) -> List[Dict[str, Any]]:
+
+def build_openai_tools(
+    skill_registry: Optional[SkillRegistry] = None,
+    context_manager: Optional[ContextManager] = None,
+) -> List[Dict[str, Any]]:
     tools = list(CORE_OPENAI_TOOLS)
     if skill_registry is not None and skill_registry.skills:
         tools.append(skill_registry.activation_tool_schema())
+    if context_manager is not None:
+        tools.extend(MEMORY_OPENAI_TOOLS)
     return tools
 
 
@@ -242,6 +343,11 @@ You have these tools available:
 1. read_file  – read the contents of any file in the sandbox
 2. list_files – list directory contents
 3. edit_file  – create new files or patch existing ones
+4. save_memory – save durable knowledge and decisions to local memory
+5. search_memory – search saved local knowledge
+6. summarize_session – compress session context
+7. retrieve_code – retrieve only relevant code snippets
+8. offload_large_output – save huge output to disk and keep preview in context
 """
 
     if skill_registry is not None:
@@ -389,8 +495,14 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
     skill_registry = SkillRegistry(sandbox_root)
     skill_registry.refresh()
     skill_commands = SkillCommandHandler(skill_registry)
-    tool_registry = make_tools(sandbox_root, skill_registry)
     conversation: List[Dict] = []
+    context_manager = ContextManager(sandbox_root)
+    tool_registry = make_tools(
+        sandbox_root,
+        skill_registry=skill_registry,
+        context_manager=context_manager,
+        conversation_ref=conversation,
+    )
     active_provider = get_active_provider(settings)
     active_model = get_model(settings, active_provider)
 
@@ -419,6 +531,7 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                     "Switch provider",
                     "Change model",
                     "Show current settings",
+                    "Memory status",
                     "Skills",
                     "Create skill",
                     "Help",
@@ -444,10 +557,13 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                 state = refresh_runtime_state()
                 print_runtime_meta(provider=state["provider"], model=state["model"])
             elif selected == 4:
-                skill_commands.handle_skills_command("/skills")
+                status = context_manager.status()
+                print(json.dumps(status, indent=2, ensure_ascii=False))
             elif selected == 5:
-                skill_commands.handle_create_skill_command("/create skills")
+                skill_commands.handle_skills_command("/skills")
             elif selected == 6:
+                skill_commands.handle_create_skill_command("/create skills")
+            elif selected == 7:
                 print_slash_help()
             return True
 
@@ -481,6 +597,30 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
             skill_commands.handle_skills_command(raw_command)
             return True
 
+        if raw.startswith("/memory"):
+            parts = raw_command.strip().split(maxsplit=2)
+            action = parts[1].lower() if len(parts) > 1 else "status"
+            if action in ("status", "show"):
+                print(json.dumps(context_manager.status(), indent=2, ensure_ascii=False))
+                return True
+            if action == "search":
+                query = parts[2].strip() if len(parts) > 2 else ""
+                if not query:
+                    print_error("Usage: /memory search <query>")
+                    return True
+                print(json.dumps(context_manager.search_memory(query=query), indent=2, ensure_ascii=False))
+                return True
+            if action == "summarize":
+                result = context_manager.summarize_session(conversation, reason="manual")
+                print_success(f"Session summarized to {result['path']}")
+                return True
+            if action == "rebuild":
+                result = context_manager.rebuild_index()
+                print_success(f"Memory index rebuilt with {result['count']} entries.")
+                return True
+            print_error("Unknown /memory command. Use: status, search, summarize, rebuild")
+            return True
+
         if raw.startswith("/create skill"):
             skill_commands.handle_create_skill_command(raw_command)
             return True
@@ -510,10 +650,11 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
         with Spinner("thinking") as spinner:
             stream = completion(
                 model=_provider_model_ref(state["provider"], state["model"]),
-                messages=[
-                    {"role": "system", "content": build_system_prompt(sandbox_root, skill_registry)}
-                ] + conversation,
-                tools=build_openai_tools(skill_registry),
+                messages=context_manager.build_messages(
+                    system_prompt=build_system_prompt(sandbox_root, skill_registry),
+                    conversation=conversation,
+                ),
+                tools=build_openai_tools(skill_registry, context_manager=context_manager),
                 stream=True,
                 api_key=state["api_key"],
             )
@@ -596,6 +737,7 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
             sys.exit(0)
 
         conversation.append({"role": "user", "content": user_input})
+        context_manager.register_user_turn(user_input)
 
         # ── inner agentic loop ────────────────────────────────────────────────
         while True:
@@ -614,6 +756,7 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                     print_assistant_prefix()
                     print("Done.\n")
                 conversation.append({"role": "assistant", "content": assistant_text})
+                context_manager.maybe_auto_summarize(conversation)
                 break
 
             # There are tool calls to execute
@@ -639,6 +782,8 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
 
+                result = context_manager.maybe_offload_tool_result(tool_name, result)
+                context_manager.register_tool_result(tool_name, result)
                 print_tool_call(tool_name=tool_name, args=args, result=result)
 
                 conversation.append({
@@ -646,3 +791,4 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                     "tool_call_id": tc.get("id", ""),
                     "content": json.dumps(result, ensure_ascii=False),
                 })
+                context_manager.maybe_auto_summarize(conversation)

@@ -76,6 +76,10 @@ def print_slash_help() -> None:
     print(f"{MUTED_COLOR}  /model    Choose model for provider{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /provider Switch active provider{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /show     Show current provider + model{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /memory   Manage local context memory{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /memory search <query> Search saved memory{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /memory summarize Compress current session{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /memory rebuild Rebuild memory index{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /skills   Show or load available skills{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /skills <name> Load a skill by name{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /create skills Create a project skill{RESET_COLOR}")
@@ -132,6 +136,11 @@ TOOL_STATES = {
     "list_files": "scanning",
     "edit_file": "creating",
     "activate_skill": "loading",
+    "save_memory": "saving",
+    "search_memory": "searching",
+    "summarize_session": "compressing",
+    "retrieve_code": "retrieving",
+    "offload_large_output": "offloading",
 }
 
 

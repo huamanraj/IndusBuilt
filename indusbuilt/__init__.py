@@ -1,2 +1,6 @@
 """IndusBuilt - A CLI coding agent powered by OpenAI."""
-__version__ = "1.0.1"
+
+from .context_manager import ContextManager
+
+__all__ = ["ContextManager"]
+__version__ = "1.1.1"
