@@ -20,6 +20,8 @@ from .settings import (
     set_api_key,
     set_model,
 )
+from .skill_commands import SkillCommandHandler
+from .skills import SkillRegistry
 from .ui import (
     Spinner,
     choose_from_list,
@@ -57,8 +59,8 @@ def resolve_sandboxed_path(path_str: str, sandbox_root: Path) -> Path:
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
-def make_tools(sandbox_root: Path):
-    """Returns the three core tools bound to a sandbox_root."""
+def make_tools(sandbox_root: Path, skill_registry: Optional[SkillRegistry] = None):
+    """Returns the core tools bound to a sandbox_root."""
 
     def read_file_tool(filename: str) -> Dict[str, Any]:
         """
@@ -139,15 +141,20 @@ def make_tools(sandbox_root: Path):
         except Exception as e:
             return {"error": str(e)}
 
-    return {
+    tools = {
         "read_file":  read_file_tool,
         "list_files": list_files_tool,
         "edit_file":  edit_file_tool,
     }
 
+    if skill_registry is not None:
+        tools["activate_skill"] = skill_registry.activate
+
+    return tools
+
 
 # ── OpenAI tool schemas ───────────────────────────────────────────────────────
-OPENAI_TOOLS = [
+CORE_OPENAI_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -210,9 +217,16 @@ OPENAI_TOOLS = [
 ]
 
 
+def build_openai_tools(skill_registry: Optional[SkillRegistry] = None) -> List[Dict[str, Any]]:
+    tools = list(CORE_OPENAI_TOOLS)
+    if skill_registry is not None and skill_registry.skills:
+        tools.append(skill_registry.activation_tool_schema())
+    return tools
+
+
 # ── System prompt ─────────────────────────────────────────────────────────────
-def build_system_prompt(sandbox_root: Path) -> str:
-    return f"""You are IndusBuilt, an expert coding assistant.
+def build_system_prompt(sandbox_root: Path, skill_registry: Optional[SkillRegistry] = None) -> str:
+    prompt = f"""You are IndusBuilt, an expert coding assistant.
 
 Sandbox directory: {sandbox_root}
 
@@ -224,11 +238,26 @@ IMPORTANT RULES:
 - Chain tool calls as needed to complete tasks (read → understand → edit).
 - When done, give a clear summary of what you changed.
 
-You have three tools available:
+You have these tools available:
 1. read_file  – read the contents of any file in the sandbox
 2. list_files – list directory contents
 3. edit_file  – create new files or patch existing ones
 """
+
+    if skill_registry is not None:
+        catalog = skill_registry.catalog_prompt()
+        active_skills = skill_registry.active_prompt()
+        if catalog:
+            prompt += (
+                "4. activate_skill – load skill instructions when available skills match the task\n"
+                "\nSKILLS:\n"
+                + catalog
+                + "\n"
+            )
+        if active_skills:
+            prompt += "\n" + active_skills + "\n"
+
+    return prompt
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────
@@ -357,8 +386,10 @@ def _ensure_active_provider_key(settings: Dict[str, Any]) -> str:
 
 
 def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
-    tool_registry = make_tools(sandbox_root)
-    system_prompt = build_system_prompt(sandbox_root)
+    skill_registry = SkillRegistry(sandbox_root)
+    skill_registry.refresh()
+    skill_commands = SkillCommandHandler(skill_registry)
+    tool_registry = make_tools(sandbox_root, skill_registry)
     conversation: List[Dict] = []
     active_provider = get_active_provider(settings)
     active_model = get_model(settings, active_provider)
@@ -377,7 +408,8 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
         }
 
     def handle_slash_command(command: str) -> bool:
-        raw = command.strip().lower()
+        raw_command = command.strip()
+        raw = raw_command.lower()
 
         if raw in ("/", "/menu"):
             selected = choose_from_list(
@@ -387,6 +419,8 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                     "Switch provider",
                     "Change model",
                     "Show current settings",
+                    "Skills",
+                    "Create skill",
                     "Help",
                     "Cancel",
                 ],
@@ -410,6 +444,10 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                 state = refresh_runtime_state()
                 print_runtime_meta(provider=state["provider"], model=state["model"])
             elif selected == 4:
+                skill_commands.handle_skills_command("/skills")
+            elif selected == 5:
+                skill_commands.handle_create_skill_command("/create skills")
+            elif selected == 6:
                 print_slash_help()
             return True
 
@@ -439,6 +477,14 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
             print_runtime_meta(provider=state["provider"], model=state["model"])
             return True
 
+        if raw.startswith("/skills"):
+            skill_commands.handle_skills_command(raw_command)
+            return True
+
+        if raw.startswith("/create skill"):
+            skill_commands.handle_create_skill_command(raw_command)
+            return True
+
         if raw.startswith("/help"):
             print_slash_help()
             return True
@@ -464,8 +510,10 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
         with Spinner("thinking") as spinner:
             stream = completion(
                 model=_provider_model_ref(state["provider"], state["model"]),
-                messages=[{"role": "system", "content": system_prompt}] + conversation,
-                tools=OPENAI_TOOLS,
+                messages=[
+                    {"role": "system", "content": build_system_prompt(sandbox_root, skill_registry)}
+                ] + conversation,
+                tools=build_openai_tools(skill_registry),
                 stream=True,
                 api_key=state["api_key"],
             )

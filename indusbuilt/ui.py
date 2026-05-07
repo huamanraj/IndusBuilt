@@ -76,6 +76,9 @@ def print_slash_help() -> None:
     print(f"{MUTED_COLOR}  /model    Choose model for provider{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /provider Switch active provider{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /show     Show current provider + model{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /skills   Show or load available skills{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /skills <name> Load a skill by name{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /create skills Create a project skill{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /help     Show this help{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /exit     Exit agent{RESET_COLOR}\n")
 
@@ -128,6 +131,7 @@ TOOL_STATES = {
     "read_file": "reading",
     "list_files": "scanning",
     "edit_file": "creating",
+    "activate_skill": "loading",
 }
 
 
