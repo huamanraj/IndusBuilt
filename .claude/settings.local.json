@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path . -Force)",
+      "Bash(Select-Object -Property Name, Mode)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(python *)"
+    ]
+  }
+}

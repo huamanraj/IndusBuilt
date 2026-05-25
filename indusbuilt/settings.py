@@ -21,6 +21,18 @@ MODEL_CHOICES = {
     "gemini": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"],
 }
 
+DEFAULT_SUBAGENT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-haiku-3-5-20241022",
+    "gemini": "gemini-2.0-flash-lite",
+}
+
+SUBAGENT_MODEL_CHOICES = {
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+    "anthropic": ["claude-haiku-3-5-20241022", "claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"],
+    "gemini": ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-pro"],
+}
+
 
 def _config_path() -> Path:
     """Return the per-user config file path."""
@@ -151,6 +163,20 @@ def clear_saved_api_key() -> bool:
     clear_api_key(settings, "openai")
     save_settings(settings)
     return had_key
+
+
+def get_subagent_model(settings: Dict[str, Any], provider: str) -> str:
+    subagent_models = settings.get("subagent_models", {})
+    value = subagent_models.get(provider, "") if isinstance(subagent_models, dict) else ""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return DEFAULT_SUBAGENT_MODELS.get(provider, DEFAULT_MODELS.get(provider, ""))
+
+
+def set_subagent_model(settings: Dict[str, Any], provider: str, model: str) -> None:
+    if "subagent_models" not in settings or not isinstance(settings["subagent_models"], dict):
+        settings["subagent_models"] = {}
+    settings["subagent_models"][provider] = model.strip()
 
 
 def get_config_file_path() -> Path:

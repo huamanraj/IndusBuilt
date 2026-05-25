@@ -9,7 +9,7 @@ import threading
 import time
 from itertools import cycle
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 if os.name == "nt":
     import msvcrt
@@ -21,6 +21,7 @@ else:
 YOU_COLOR = "\u001b[94m"
 ASSISTANT_COLOR = "\u001b[93m"
 TOOL_COLOR = "\u001b[96m"
+SUBAGENT_COLOR = "[35m"
 ERROR_COLOR = "\u001b[91m"
 SUCCESS_COLOR = "\u001b[92m"
 MUTED_COLOR = "\u001b[90m"
@@ -83,6 +84,10 @@ def print_slash_help() -> None:
     print(f"{MUTED_COLOR}  /skills   Show or load available skills{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /skills <name> Load a skill by name{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /create skills Create a project skill{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /subagents       List available subagents{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /subagents <name>  Show subagent details{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /subagent model  Change subagent model{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /create subagent Create a custom subagent{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /help     Show this help{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /exit     Exit agent{RESET_COLOR}\n")
 
@@ -133,7 +138,11 @@ class Spinner:
 
 TOOL_STATES = {
     "read_file": "reading",
+    "read_files": "reading",
     "list_files": "scanning",
+    "tree": "mapping",
+    "search_files": "searching",
+    "grep": "searching",
     "edit_file": "creating",
     "activate_skill": "loading",
     "save_memory": "saving",
@@ -152,6 +161,33 @@ def print_tool_call(tool_name: str, args: Dict[str, Any], result: Dict[str, Any]
     print(f"{TOOL_COLOR}[tool] {tool_name}  state={state}{RESET_COLOR}")
     print(f"{MUTED_COLOR}       args: {args_text}{RESET_COLOR}")
     print(f"{MUTED_COLOR}       result: {status}{RESET_COLOR}")
+
+def print_subagent_dispatch(calls: List[Tuple[str, str]]) -> None:
+    """Print a header when one or more subagents are about to be dispatched."""
+    if len(calls) == 1:
+        name, task = calls[0]
+        print(f"{SUBAGENT_COLOR}[subagent] {name}  dispatching{RESET_COLOR}")
+        truncated = task[:80] + ("..." if len(task) > 80 else "")
+        print(f"{MUTED_COLOR}           task: {truncated}{RESET_COLOR}")
+    else:
+        names = " | ".join(name for name, _ in calls)
+        print(f"{SUBAGENT_COLOR}[subagents x{len(calls)}] {names}  parallel{RESET_COLOR}")
+        for name, task in calls:
+            truncated = task[:70] + ("..." if len(task) > 70 else "")
+            print(f"{MUTED_COLOR}  +-- {name}: {truncated}{RESET_COLOR}")
+
+
+def print_subagent_result(result) -> None:
+    """Print the result of a completed subagent run."""
+    if result.error:
+        print(f"{SUBAGENT_COLOR}[subagent] {result.name}  {ERROR_COLOR}error{RESET_COLOR}  ({result.elapsed_s:.1f}s)")
+        print(f"{ERROR_COLOR}           {result.error}{RESET_COLOR}")
+    else:
+        print(f"{SUBAGENT_COLOR}[subagent] {result.name}  {SUCCESS_COLOR}done{RESET_COLOR}  ({result.elapsed_s:.1f}s, {result.turns} turns)")
+        preview = result.output[:120].replace(chr(10), " ")
+        if len(result.output) > 120:
+            preview += "..."
+        print(f"{MUTED_COLOR}           result: {preview}{RESET_COLOR}")
 
 
 def print_assistant_prefix() -> None:
