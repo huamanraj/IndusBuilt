@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "name": "error-handler",
+        "event": "PostToolUseFailure",
+        "type": "command",
+        "command": "echo {\"decision\": \"allow\", \"additional_context\": \"[ERROR_HANDLER] Tool failure was logged\"}",
+        "timeout": 10
+      }
+    ]
+  }
+}

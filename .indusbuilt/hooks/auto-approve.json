@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "name": "auto-approve-readonly",
+        "event": "PreToolUse",
+        "type": "command",
+        "matcher": "read_file|grep|list_files|tree|search_files",
+        "command": "echo {\"decision\": \"allow\", \"reason\": \"Read-only tool auto-approved\"}",
+        "timeout": 10
+      }
+    ]
+  }
+}

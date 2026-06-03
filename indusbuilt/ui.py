@@ -88,6 +88,9 @@ def print_slash_help() -> None:
     print(f"{MUTED_COLOR}  /subagents <name>  Show subagent details{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /subagent model  Change subagent model{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /create subagent Create a custom subagent{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /hooks    List active hooks{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /hooks <name>  Show hook details{RESET_COLOR}")
+    print(f"{MUTED_COLOR}  /create hook Create a new hook{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /help     Show this help{RESET_COLOR}")
     print(f"{MUTED_COLOR}  /exit     Exit agent{RESET_COLOR}\n")
 
@@ -152,6 +155,8 @@ TOOL_STATES = {
     "offload_large_output": "offloading",
 }
 
+HOOK_COLOR = "\u001b[35m"
+
 
 def print_tool_call(tool_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
     state = TOOL_STATES.get(tool_name, "working")
@@ -161,6 +166,25 @@ def print_tool_call(tool_name: str, args: Dict[str, Any], result: Dict[str, Any]
     print(f"{TOOL_COLOR}[tool] {tool_name}  state={state}{RESET_COLOR}")
     print(f"{MUTED_COLOR}       args: {args_text}{RESET_COLOR}")
     print(f"{MUTED_COLOR}       result: {status}{RESET_COLOR}")
+
+
+def print_hook_result(hook_result) -> None:
+    """Print the result of a hook execution."""
+    decision_color = SUCCESS_COLOR
+    if hook_result.decision == "block":
+        decision_color = ERROR_COLOR
+    elif hook_result.decision == "warn":
+        decision_color = "\u001b[93m"
+    elif hook_result.decision == "ask":
+        decision_color = HOOK_COLOR
+
+    print(f"{HOOK_COLOR}[hook] {hook_result.hook_name}{RESET_COLOR}  "
+          f"decision={decision_color}{hook_result.decision}{RESET_COLOR}  "
+          f"({hook_result.elapsed_s:.2f}s)")
+    if hook_result.reason:
+        print(f"{MUTED_COLOR}       reason: {hook_result.reason}{RESET_COLOR}")
+    if hook_result.error:
+        print(f"{ERROR_COLOR}       error: {hook_result.error}{RESET_COLOR}")
 
 def print_subagent_dispatch(calls: List[Tuple[str, str]]) -> None:
     """Print a header when one or more subagents are about to be dispatched."""

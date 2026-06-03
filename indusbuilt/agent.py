@@ -24,6 +24,8 @@ from .settings import (
     set_model,
     set_subagent_model,
 )
+from .hook_commands import HookCommandHandler
+from .hooks import HookEvent, HookEventContext, HookRegistry
 from .skill_commands import SkillCommandHandler
 from .skills import SkillRegistry
 from .subagent_commands import SubAgentCommandHandler
@@ -33,6 +35,7 @@ from .ui import (
     choose_from_list,
     print_error,
     print_assistant_prefix,
+    print_hook_result,
     print_runtime_meta,
     print_startup_banner,
     print_success,
@@ -875,6 +878,9 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
     subagent_registry = SubAgentRegistry(sandbox_root)
     subagent_registry.refresh()
     subagent_commands = SubAgentCommandHandler(subagent_registry)
+    hook_registry = HookRegistry(sandbox_root)
+    hook_registry.refresh()
+    hook_commands = HookCommandHandler(hook_registry)
     conversation: List[Dict] = []
     context_manager = ContextManager(sandbox_root)
     tool_registry = make_tools(
@@ -885,6 +891,25 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
     )
     active_provider = get_active_provider(settings)
     active_model = get_model(settings, active_provider)
+
+    import uuid
+    session_id = uuid.uuid4().hex[:12]
+
+    def _build_hook_context(**kwargs: Any) -> HookEventContext:
+        return HookEventContext(
+            session_id=session_id,
+            cwd=str(sandbox_root),
+            **kwargs,
+        )
+
+    # ── SessionStart hook ─────────────────────────────────────────────────────
+    hook_registry.execute_hooks(
+        HookEvent.SessionStart,
+        _build_hook_context(hook_event_name=HookEvent.SessionStart),
+        settings=settings,
+        tool_registry=tool_registry,
+        ui_callback=print_hook_result,
+    )
 
     print_startup_banner(sandbox_root=sandbox_root, model=active_model)
     print_runtime_meta(provider=active_provider, model=active_model)
@@ -919,6 +944,8 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                     "Create skill",
                     "SubAgents",
                     "Create subagent",
+                    "Hooks",
+                    "Create hook",
                     "Help",
                     "Cancel",
                 ],
@@ -961,6 +988,10 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
             elif selected == 9:
                 subagent_commands.handle_create_subagent_command("/create subagent")
             elif selected == 10:
+                hook_commands.handle_hooks_command("/hooks")
+            elif selected == 11:
+                hook_commands.handle_create_hook_command("/create hook")
+            elif selected == 12:
                 print_slash_help()
             return True
 
@@ -1039,11 +1070,27 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
             subagent_commands.handle_create_subagent_command(raw_command)
             return True
 
+        if raw.startswith("/hooks"):
+            hook_commands.handle_hooks_command(raw_command)
+            return True
+
+        if raw.startswith("/create hook"):
+            hook_commands.handle_create_hook_command(raw_command)
+            return True
+
         if raw.startswith("/help"):
             print_slash_help()
             return True
 
         if raw.startswith("/exit"):
+            # ── SessionEnd hook ────────────────────────────────────────────────
+            hook_registry.execute_hooks(
+                HookEvent.SessionEnd,
+                _build_hook_context(hook_event_name=HookEvent.SessionEnd),
+                settings=settings,
+                tool_registry=tool_registry,
+                ui_callback=print_hook_result,
+            )
             print("Goodbye!")
             raise SystemExit(0)
 
@@ -1123,10 +1170,26 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
         try:
             user_input = input(print_user_prompt()).strip()
         except (KeyboardInterrupt, EOFError):
+            # ── SessionEnd hook ────────────────────────────────────────────────
+            hook_registry.execute_hooks(
+                HookEvent.SessionEnd,
+                _build_hook_context(hook_event_name=HookEvent.SessionEnd),
+                settings=settings,
+                tool_registry=tool_registry,
+                ui_callback=print_hook_result,
+            )
             print("\nGoodbye!")
             sys.exit(0)
 
         if user_input.lower() in ("exit", "quit", "bye"):
+            # ── SessionEnd hook ────────────────────────────────────────────────
+            hook_registry.execute_hooks(
+                HookEvent.SessionEnd,
+                _build_hook_context(hook_event_name=HookEvent.SessionEnd),
+                settings=settings,
+                tool_registry=tool_registry,
+                ui_callback=print_hook_result,
+            )
             print("Goodbye!")
             sys.exit(0)
 
@@ -1147,11 +1210,36 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
         try:
             _ensure_active_provider_key(settings)
         except SystemExit:
+            # ── SessionEnd hook ────────────────────────────────────────────────
+            hook_registry.execute_hooks(
+                HookEvent.SessionEnd,
+                _build_hook_context(hook_event_name=HookEvent.SessionEnd),
+                settings=settings,
+                tool_registry=tool_registry,
+                ui_callback=print_hook_result,
+            )
             print("Goodbye!")
             sys.exit(0)
 
         conversation.append({"role": "user", "content": user_input})
         context_manager.register_user_turn(user_input)
+
+        # ── UserPromptSubmit hook ──────────────────────────────────────────────
+        user_prompt_hook = hook_registry.execute_hooks(
+            HookEvent.UserPromptSubmit,
+            _build_hook_context(
+                hook_event_name=HookEvent.UserPromptSubmit,
+                user_prompt=user_input,
+            ),
+            settings=settings,
+            tool_registry=tool_registry,
+            ui_callback=print_hook_result,
+        )
+        if user_prompt_hook.get("additional_context"):
+            conversation.append({
+                "role": "user",
+                "content": f"[Hook context] {user_prompt_hook['additional_context']}",
+            })
 
         # ── inner agentic loop ────────────────────────────────────────────────
         while True:
@@ -1171,6 +1259,15 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                     print("Done.\n")
                 conversation.append({"role": "assistant", "content": assistant_text})
                 context_manager.maybe_auto_summarize(conversation)
+
+                # ── Stop hook (final reply) ────────────────────────────────────
+                hook_registry.execute_hooks(
+                    HookEvent.Stop,
+                    _build_hook_context(hook_event_name=HookEvent.Stop),
+                    settings=settings,
+                    tool_registry=tool_registry,
+                    ui_callback=print_hook_result,
+                )
                 break
 
             # There are tool calls to execute
@@ -1202,12 +1299,88 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                 except json.JSONDecodeError:
                     args = {}
 
-                fn = tool_registry.get(tool_name)
-                if fn:
-                    with Spinner(f"{tool_name} in progress"):
-                        result = fn(**args)
+                # ── PreToolUse hook ────────────────────────────────────────────
+                pre_tool_hook = hook_registry.execute_hooks(
+                    HookEvent.PreToolUse,
+                    _build_hook_context(
+                        hook_event_name=HookEvent.PreToolUse,
+                        tool_name=tool_name,
+                        tool_input=args,
+                    ),
+                    settings=settings,
+                    tool_registry=tool_registry,
+                    ui_callback=print_hook_result,
+                )
+
+                # Apply modified input from hook
+                if pre_tool_hook.get("modified_input"):
+                    args = pre_tool_hook["modified_input"]
+
+                if pre_tool_hook.get("decision") == "block":
+                    result = {"error": f"Hook blocked tool '{tool_name}': {pre_tool_hook.get('results', [{}])[0].reason if pre_tool_hook.get('results') else 'blocked by hook'}"}
+                elif pre_tool_hook.get("decision") == "warn":
+                    if pre_tool_hook.get("system_messages"):
+                        for msg in pre_tool_hook["system_messages"]:
+                            print_error(f"Warning: {msg}")
+                    fn = tool_registry.get(tool_name)
+                    if fn:
+                        with Spinner(f"{tool_name} in progress"):
+                            result = fn(**args)
+                    else:
+                        result = {"error": f"Unknown tool: {tool_name}"}
+                elif pre_tool_hook.get("decision") == "ask":
+                    choice = choose_from_list(
+                        f"Hook requires approval for '{tool_name}'",
+                        ["Approve", "Deny"],
+                    )
+                    if choice == 0:
+                        fn = tool_registry.get(tool_name)
+                        if fn:
+                            with Spinner(f"{tool_name} in progress"):
+                                result = fn(**args)
+                        else:
+                            result = {"error": f"Unknown tool: {tool_name}"}
+                    else:
+                        result = {"error": f"User denied tool '{tool_name}' via hook"}
                 else:
-                    result = {"error": f"Unknown tool: {tool_name}"}
+                    fn = tool_registry.get(tool_name)
+                    if fn:
+                        with Spinner(f"{tool_name} in progress"):
+                            result = fn(**args)
+                    else:
+                        result = {"error": f"Unknown tool: {tool_name}"}
+
+                # ── PostToolUse / PostToolUseFailure hook ──────────────────────
+                if "error" in result:
+                    hook_registry.execute_hooks(
+                        HookEvent.PostToolUseFailure,
+                        _build_hook_context(
+                            hook_event_name=HookEvent.PostToolUseFailure,
+                            tool_name=tool_name,
+                            tool_input=args,
+                            tool_output=result,
+                            error_message=result.get("error", ""),
+                        ),
+                        settings=settings,
+                        tool_registry=tool_registry,
+                        ui_callback=print_hook_result,
+                    )
+                else:
+                    post_hook = hook_registry.execute_hooks(
+                        HookEvent.PostToolUse,
+                        _build_hook_context(
+                            hook_event_name=HookEvent.PostToolUse,
+                            tool_name=tool_name,
+                            tool_input=args,
+                            tool_output=result,
+                        ),
+                        settings=settings,
+                        tool_registry=tool_registry,
+                        ui_callback=print_hook_result,
+                    )
+                    if post_hook.get("additional_context"):
+                        if isinstance(result, dict):
+                            result["_hook_context"] = post_hook["additional_context"]
 
                 result = context_manager.maybe_offload_tool_result(tool_name, result)
                 context_manager.register_tool_result(tool_name, result)
@@ -1244,6 +1417,20 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                     dispatch_info = [(defn.name, task) for defn, task, _ in valid_sa_calls]
                     print_subagent_dispatch(dispatch_info)
 
+                    # ── SubagentStart hook ────────────────────────────────────
+                    for sa_def, sa_task, _ in valid_sa_calls:
+                        hook_registry.execute_hooks(
+                            HookEvent.SubagentStart,
+                            _build_hook_context(
+                                hook_event_name=HookEvent.SubagentStart,
+                                subagent_name=sa_def.name,
+                                subagent_task=sa_task,
+                            ),
+                            settings=settings,
+                            tool_registry=tool_registry,
+                            ui_callback=print_hook_result,
+                        )
+
                     calls_for_runner = [(defn, task) for defn, task, _ in valid_sa_calls]
                     plural = "s" if len(calls_for_runner) > 1 else ""
                     with Spinner(f"running {len(calls_for_runner)} subagent{plural} in parallel"):
@@ -1267,6 +1454,34 @@ def run_agent(sandbox_root: Path, settings: Dict[str, Any]):
                         if sa_result.error:
                             result_dict["error"] = sa_result.error
                         tc_results[tc_id] = result_dict
+
+                        # ── SubagentStop hook ─────────────────────────────────
+                        hook_registry.execute_hooks(
+                            HookEvent.SubagentStop,
+                            _build_hook_context(
+                                hook_event_name=HookEvent.SubagentStop,
+                                subagent_name=sa_result.name,
+                                subagent_task=task,
+                                subagent_result={
+                                    "output": sa_result.output,
+                                    "elapsed_s": sa_result.elapsed_s,
+                                    "turns": sa_result.turns,
+                                    "error": sa_result.error,
+                                },
+                            ),
+                            settings=settings,
+                            tool_registry=tool_registry,
+                            ui_callback=print_hook_result,
+                        )
+
+            # ── Stop hook (end of tool turn) ────────────────────────────────
+            hook_registry.execute_hooks(
+                HookEvent.Stop,
+                _build_hook_context(hook_event_name=HookEvent.Stop),
+                settings=settings,
+                tool_registry=tool_registry,
+                ui_callback=print_hook_result,
+            )
 
             # Append all results to conversation in original order
             for tc in tool_calls:

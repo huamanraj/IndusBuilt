@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "Stop": [
+      {
+        "name": "stop-verifier",
+        "event": "Stop",
+        "type": "command",
+        "command": "echo {\"decision\": \"allow\", \"system_message\": \"Turn complete. All hooks verified.\"}",
+        "timeout": 10
+      }
+    ]
+  }
+}

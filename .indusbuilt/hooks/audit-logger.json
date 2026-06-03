@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "name": "audit-logger",
+        "event": "PostToolUse",
+        "type": "command",
+        "command": "echo {\"decision\": \"allow\", \"additional_context\": \"[AUDIT] Tool call logged to audit trail\"}",
+        "timeout": 10
+      }
+    ]
+  }
+}

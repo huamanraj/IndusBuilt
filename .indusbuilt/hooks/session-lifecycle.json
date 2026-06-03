@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "name": "session-start",
+        "event": "SessionStart",
+        "type": "command",
+        "command": "echo {\"decision\": \"allow\", \"system_message\": \"Session initialized: loaded hooks configuration\"}",
+        "timeout": 10
+      }
+    ],
+    "SessionEnd": [
+      {
+        "name": "session-end",
+        "event": "SessionEnd",
+        "type": "command",
+        "command": "echo {\"decision\": \"allow\", \"system_message\": \"Session ended: cleaning up resources\"}",
+        "timeout": 10
+      }
+    ]
+  }
+}

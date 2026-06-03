@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "name": "gate",
+        "event": "PreToolUse",
+        "type": "command",
+        "matcher": "edit_file",
+        "command": "python .indusbuilt/hooks/security_check.py",
+        "timeout": 10
+      }
+    ]
+  }
+}

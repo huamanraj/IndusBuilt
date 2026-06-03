@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "name": "context-injector",
+        "event": "UserPromptSubmit",
+        "type": "command",
+        "command": "echo {\"decision\": \"allow\", \"additional_context\": \"Project: indusbuilt | Branch: main | Recent: added hooks feature\"}",
+        "timeout": 10
+      }
+    ]
+  }
+}
