@@ -1,10 +1,13 @@
 """
 Slash command handlers for SubAgents.
+
+Note: the controller no longer uses these — the interactive flow for
+subagents is implemented inside AgentController. This module is kept
+for backwards compatibility and exposes helper methods.
 """
 from __future__ import annotations
 
 from .subagents import SubAgentRegistry
-from .ui import choose_from_list, print_error, print_success
 
 
 class SubAgentCommandHandler:

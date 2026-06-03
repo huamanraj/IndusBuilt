@@ -1,10 +1,14 @@
 """
 Slash command handlers for Agent Hooks.
+
+Note: the controller no longer uses these — the interactive flow for
+hooks is implemented inside AgentController. This module is kept for
+backwards compatibility and exposes helper methods that the controller
+delegates to where useful.
 """
 from __future__ import annotations
 
 from .hooks import HookRegistry, HookEvent, HookType
-from .ui import choose_from_list, print_error, print_success
 
 
 class HookCommandHandler:

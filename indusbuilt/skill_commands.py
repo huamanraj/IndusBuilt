@@ -1,10 +1,13 @@
 """
 Slash command handlers for Agent Skills.
+
+Note: the controller no longer uses these — the interactive flow for
+skills is implemented inside AgentController. This module is kept for
+backwards compatibility and exposes helper methods.
 """
 from __future__ import annotations
 
 from .skills import SkillRegistry, normalize_skill_name
-from .ui import choose_from_list, print_error, print_success
 
 
 class SkillCommandHandler:
