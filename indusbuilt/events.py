@@ -26,6 +26,9 @@ class SessionStart(AgentEvent):
     skills: List[str] = field(default_factory=list)
     subagents: List[str] = field(default_factory=list)
     hooks: List[str] = field(default_factory=list)
+    router_enabled: bool = True
+    router_provider: str = ""
+    router_model: str = ""
 
 
 @dataclass
@@ -165,6 +168,19 @@ class AskInput(AgentEvent):
 class SlashHandled(AgentEvent):
     """A slash command was executed; the loop should continue."""
     pass
+
+
+@dataclass
+class RouterDecision(AgentEvent):
+    """The router model selected a set of tool categories for the current turn."""
+    user_message: str
+    categories: List[str] = field(default_factory=list)
+    tool_names: List[str] = field(default_factory=list)
+    provider: str = ""
+    model: str = ""
+    elapsed_s: float = 0.0
+    error: Optional[str] = None
+    rerouted: bool = False
 
 
 EventSink = Callable[[AgentEvent], None]

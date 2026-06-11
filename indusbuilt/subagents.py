@@ -28,15 +28,15 @@ BUILTIN_SUBAGENTS: Dict[str, Dict[str, Any]] = {
             "You are Explore, a fast read-only codebase search subagent.\n"
             "Your job: quickly find, trace, and summarize code — then return a concise report.\n\n"
             "Guidelines:\n"
-            "- Use list_files to navigate directory structure\n"
-            "- Use read_file to inspect relevant source files\n"
-            "- Use retrieve_code for keyword-based snippet search\n"
+            "- Use the `terminal` tool for all file inspection: `ls`, `find`, `grep -rn`, `cat`, `sed -n`\n"
+            "- Use `retrieve_code` for keyword-based snippet search when useful\n"
+            "- Combine shell commands with `&&` / `;` / pipes to keep things to one call\n"
             "- Return a clear, structured summary of what you found\n"
             "- Include file paths and line references where relevant\n"
             "- Be fast and precise — the main agent depends on your findings\n"
             "- Do NOT make any edits or create any files"
         ),
-        "tools": ["read_file", "list_files", "retrieve_code", "search_memory"],
+        "tools": ["terminal", "retrieve_code", "search_memory"],
         "max_turns": 8,
         "source": "builtin",
     },
@@ -51,14 +51,13 @@ BUILTIN_SUBAGENTS: Dict[str, Dict[str, Any]] = {
             "You are Research, a context-gathering subagent used during planning.\n"
             "Your job: deeply understand the codebase and return thorough, actionable context.\n\n"
             "Guidelines:\n"
-            "- Read key files to understand architecture, patterns, and conventions\n"
-            "- Search memory for relevant past decisions and known bugs\n"
-            "- Trace imports and dependencies to map the relevant subsystem\n"
+            "- Use the `terminal` tool to read key files, trace imports, map dependencies\n"
+            "- Use `search_memory` for relevant past decisions and known bugs\n"
             "- Return: key patterns, relevant file paths, design constraints, important context\n"
             "- Be thorough — your findings directly shape the plan\n"
             "- Do NOT make any edits or create any files"
         ),
-        "tools": ["read_file", "list_files", "retrieve_code", "search_memory"],
+        "tools": ["terminal", "retrieve_code", "search_memory"],
         "max_turns": 12,
         "source": "builtin",
     },
@@ -145,7 +144,7 @@ class SubAgentRegistry:
         if not name or not description:
             return None
 
-        tools_raw = fm.get("tools", "read_file,list_files,retrieve_code")
+        tools_raw = fm.get("tools", "terminal,retrieve_code,search_memory")
         tools = [t.strip() for t in tools_raw.split(",") if t.strip()]
         max_turns = int(fm.get("max_turns", "8"))
 
@@ -245,13 +244,14 @@ def _agent_template(name: str, description: str, purpose: str) -> str:
         "---\n"
         f"name: {name}\n"
         f"description: {description}\n"
-        "tools: read_file,list_files,retrieve_code,search_memory\n"
+        "tools: terminal,retrieve_code,search_memory\n"
         "max_turns: 8\n"
         "---\n\n"
         f"# {title} SubAgent\n\n"
         f"You are a specialized subagent for: {purpose}\n\n"
         "## Instructions\n\n"
-        "- Describe your specialized workflow and instructions here.\n"
+        "- Your only direct tool is `terminal`. Use shell one-liners (ls, find, grep, cat,\n"
+        "  sed, python -c) to inspect the codebase. Combine steps with `&&` / `;` / pipes.\n"
         "- Return a concise, structured summary of your findings.\n"
         "- Do NOT edit or create files unless the purpose above explicitly requires it.\n"
     )

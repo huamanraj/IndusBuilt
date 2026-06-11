@@ -1,67 +1,73 @@
 """
-Catppuccin Mocha palette and Textual CSS for IndusBuilt.
-Minimal, dark, modern. Code blocks are the only place we use heavy color.
+Pure grayscale palette and Textual CSS for IndusBuilt.
+
+No color hues. All visual differentiation is expressed through
+brightness: near-black for backgrounds, mid-grey for muted text,
+and off-white / white for active and emphasized content.
 """
 from __future__ import annotations
 
-# Catppuccin Mocha colors
+# Pure grayscale ladder (dark -> light)
 PALETTE = {
-    "base":     "#1e1e2e",
-    "mantle":   "#181825",
-    "crust":    "#11111b",
-    "surface0": "#313244",
-    "surface1": "#45475a",
-    "surface2": "#585b70",
-    "overlay0": "#6c7086",
-    "overlay1": "#7f849c",
-    "overlay2": "#9399b2",
-    "subtext0": "#a6adc8",
-    "subtext1": "#bac2de",
-    "text":     "#cdd6f4",
-    "rosewater":"#f5e0dc",
-    "flamingo": "#f2cdcd",
-    "pink":     "#f5c2e7",
-    "mauve":    "#cba6f7",
-    "red":      "#f38ba8",
-    "maroon":   "#eba0ac",
-    "peach":    "#fab387",
-    "yellow":   "#f9e2af",
-    "green":    "#a6e3a1",
-    "teal":     "#94e2d5",
-    "sky":      "#89dceb",
-    "sapphire": "#74c7ec",
-    "blue":     "#89b4fa",
-    "lavender": "#b4befe",
+    "base":     "#0a0a0a",  # screen background (near black)
+    "mantle":   "#111111",  # panel / header background
+    "crust":    "#000000",  # deepest (modal scrim)
+    "surface0": "#1a1a1a",  # card background
+    "surface1": "#222222",  # input field background
+    "surface2": "#2e2e2e",  # raised surface
+    "overlay0": "#5e5e5e",  # disabled / hint
+    "overlay1": "#7a7a7a",  # secondary muted
+    "overlay2": "#9a9a9a",  # primary muted
+    "subtext0": "#a8a8a8",  # body muted
+    "subtext1": "#c0c0c0",  # body secondary
+    "text":     "#e6e6e6",  # body text (off-white)
+    "white":    "#ffffff",  # accent / highlight
+    # Legacy keys kept as aliases pointing to grayscale values so any
+    # template / linter that still references them stays valid.
+    "rosewater":"#e6e6e6",
+    "flamingo": "#c0c0c0",
+    "pink":     "#a8a8a8",
+    "mauve":    "#c0c0c0",
+    "red":      "#c0c0c0",
+    "maroon":   "#a8a8a8",
+    "peach":    "#e6e6e6",
+    "yellow":   "#c0c0c0",
+    "green":    "#c0c0c0",
+    "teal":     "#a8a8a8",
+    "sky":      "#c0c0c0",
+    "sapphire": "#a8a8a8",
+    "blue":     "#e6e6e6",
+    "lavender": "#c0c0c0",
 }
 
-# Semantic role names (used in CSS via $name)
+# Semantic role names (used in CSS via $name) - all grayscale.
 SEMANTIC_CSS = """
-$primary: #89b4fa;
-$secondary: #cba6f7;
-$accent: #fab387;
-$warning: #f9e2af;
-$error: #f38ba8;
-$success: #a6e3a1;
-$text: #cdd6f4;
-$text-muted: #a6adc8;
-$background: #1e1e2e;
-$background-alt: #181825;
-$surface: #313244;
-$surface-alt: #45475a;
-$border: #45475a;
-$border-active: #89b4fa;
+$primary: #e6e6e6;
+$secondary: #c0c0c0;
+$accent: #ffffff;
+$warning: #c0c0c0;
+$error: #c0c0c0;
+$success: #c0c0c0;
+$text: #e6e6e6;
+$text-muted: #a8a8a8;
+$background: #0a0a0a;
+$background-alt: #111111;
+$surface: #1a1a1a;
+$surface-alt: #222222;
+$border: #2e2e2e;
+$border-active: #ffffff;
 """
 
 
 # Note: Textual only supports a fixed set of theme variables
 # ($primary/$secondary/$accent/$background/$surface/$panel/$boost/
 #  $warning/$error/$success/$text/$text-muted/$text-disabled/$border).
-# We override the standard ones with Catppuccin Mocha colors, and use
+# We override the standard ones with grayscale values, and use
 # direct hex values for everything else.
 TUI_CSS = """
 Screen {
-    background: #1e1e2e;
-    color: #cdd6f4;
+    background: #0a0a0a;
+    color: #e6e6e6;
 }
 
 #welcome-container {
@@ -71,36 +77,37 @@ Screen {
 }
 
 #welcome-card {
-    width: 78;
+    width: 108;
     height: auto;
     padding: 2 4;
-    background: #181825;
-    border: round #45475a;
+    background: #111111;
+    border: round #2e2e2e;
 }
 
 #welcome-banner {
-    color: #89b4fa;
+    color: #ffffff;
     text-align: center;
     text-style: bold;
     height: auto;
     margin-bottom: 1;
+    width: 100%;
 }
 
 #welcome-subtitle {
-    color: #a6adc8;
+    color: #a8a8a8;
     text-align: center;
     text-style: italic;
     margin-bottom: 1;
 }
 
 #welcome-divider {
-    color: #45475a;
+    color: #2e2e2e;
     height: 1;
     margin-bottom: 1;
 }
 
 #welcome-info {
-    color: #a6adc8;
+    color: #a8a8a8;
     text-align: center;
     height: auto;
     margin-bottom: 1;
@@ -113,42 +120,42 @@ Screen {
 }
 
 #welcome-input {
-    background: #313244;
-    border: tall #45475a;
+    background: #1a1a1a;
+    border: tall #2e2e2e;
     height: 3;
-    color: #cdd6f4;
+    color: #e6e6e6;
 }
 
 #welcome-input:focus {
-    border: tall #89b4fa;
+    border: tall #ffffff;
 }
 
 #welcome-footer {
     dock: bottom;
     height: 1;
     padding: 0 2;
-    color: #a6adc8;
+    color: #a8a8a8;
 }
 
 #welcome-footer-version {
-    color: #fab387;
+    color: #e6e6e6;
     text-style: bold;
 }
 
 #welcome-footer-hint {
-    color: #a6adc8;
+    color: #a8a8a8;
 }
 
 #chat-header {
     dock: top;
     height: 1;
-    background: #181825;
-    color: #a6adc8;
+    background: #111111;
+    color: #a8a8a8;
     padding: 0 2;
 }
 
 #chat-log {
-    background: #1e1e2e;
+    background: #0a0a0a;
     padding: 0 2;
     scrollbar-gutter: stable;
 }
@@ -156,32 +163,32 @@ Screen {
 #chat-input-container {
     dock: bottom;
     height: 7;
-    background: #181825;
+    background: #111111;
     padding: 0 2 1 2;
-    border-top: solid #45475a;
+    border-top: solid #2e2e2e;
 }
 
 #chat-input {
-    background: #313244;
-    border: tall #45475a;
+    background: #1a1a1a;
+    border: tall #2e2e2e;
     height: 3;
-    color: #cdd6f4;
+    color: #e6e6e6;
 }
 
 #chat-input:focus {
-    border: tall #89b4fa;
+    border: tall #ffffff;
 }
 
 #chat-hint {
-    color: #a6adc8;
+    color: #7a7a7a;
     height: 1;
     padding: 0 1;
 }
 
 #slash-suggestions {
     display: none;
-    background: #313244;
-    border: round #45475a;
+    background: #1a1a1a;
+    border: round #ffffff;
     height: auto;
     max-height: 12;
     margin: 0 2;
@@ -195,103 +202,105 @@ Screen {
 .suggestion-item {
     height: 1;
     padding: 0 1;
-    color: #cdd6f4;
+    color: #e6e6e6;
 }
 
 .suggestion-item.selected {
-    background: #89b4fa;
-    color: #1e1e2e;
+    background: #ffffff;
+    color: #0a0a0a;
+    text-style: bold;
 }
 
 .suggestion-empty {
-    color: #6c7086;
+    color: #5e5e5e;
     text-style: italic;
     padding: 1;
 }
 
 UserMessage {
-    background: #313244;
-    color: #cdd6f4;
+    background: #1a1a1a;
+    color: #e6e6e6;
     padding: 1 2;
     margin: 1 0 0 6;
-    border: round #45475a;
+    border: round #2e2e2e;
     height: auto;
 }
 
 .user-prefix {
-    color: #fab387;
+    color: #ffffff;
     text-style: bold;
     margin-bottom: 1;
 }
 
 .user-body {
-    color: #cdd6f4;
+    color: #e6e6e6;
 }
 
 AssistantMessage {
     background: transparent;
-    color: #cdd6f4;
+    color: #e6e6e6;
     padding: 1 2;
     margin: 1 6 0 0;
     height: auto;
 }
 
 .assistant-prefix {
-    color: #89b4fa;
+    color: #ffffff;
     text-style: bold;
     margin-bottom: 1;
 }
 
 .assistant-body {
-    color: #cdd6f4;
+    color: #e6e6e6;
 }
 
 SystemInfo {
-    color: #a6adc8;
+    color: #a8a8a8;
     padding: 0 2;
     margin: 1 0;
     height: auto;
 }
 
 SystemSuccess {
-    color: #a6e3a1;
+    color: #ffffff;
     padding: 0 2;
     margin: 1 0;
     height: auto;
 }
 
 SystemWarning {
-    color: #f9e2af;
+    color: #c0c0c0;
     padding: 0 2;
     margin: 1 0;
     height: auto;
 }
 
 SystemError {
-    color: #f38ba8;
+    color: #ffffff;
+    text-style: bold;
     padding: 0 2;
     margin: 1 0;
     height: auto;
 }
 
 SystemMemory {
-    background: #313244;
-    border: round #45475a;
-    color: #cdd6f4;
+    background: #1a1a1a;
+    border: round #2e2e2e;
+    color: #e6e6e6;
     padding: 1 2;
     margin: 1 0;
     height: auto;
 }
 
 .memory-title {
-    color: #cba6f7;
+    color: #ffffff;
     text-style: bold;
     margin-bottom: 1;
 }
 
 CodeBlock {
-    background: #181825;
-    border: round #45475a;
+    background: #111111;
+    border: round #2e2e2e;
     padding: 0 1;
     margin: 0 0 1 0;
     height: auto;
@@ -301,89 +310,148 @@ CodeBlock {
 
 HookNotice {
     background: transparent;
-    color: #a6adc8;
+    color: #a8a8a8;
     padding: 0 2;
     margin: 0;
     height: 1;
 }
 
 ToolCard {
-    background: #313244;
-    border: round #45475a;
+    background: #1a1a1a;
+    border: round #2e2e2e;
     padding: 0 2;
     margin: 1 0;
     height: auto;
 }
 
 ToolCard.running {
-    border: round #89b4fa;
+    border: round #ffffff;
 }
 
 ToolCard.done {
-    border: round #a6e3a1;
+    border: round #2e2e2e;
 }
 
 ToolCard.error {
-    border: round #f38ba8;
+    border: round #ffffff;
 }
 
 .tool-header {
     height: 1;
-    color: #89b4fa;
+    color: #ffffff;
     text-style: bold;
 }
 
 .tool-header.done {
-    color: #a6e3a1;
+    color: #c0c0c0;
 }
 
 .tool-header.error {
-    color: #f38ba8;
+    color: #ffffff;
 }
 
 .tool-args {
-    color: #a6adc8;
+    color: #a8a8a8;
     margin: 0 0 1 0;
 }
 
 .tool-result {
-    color: #a6adc8;
+    color: #a8a8a8;
     margin: 0;
 }
 
 SubagentCard {
-    background: #313244;
-    border: round #cba6f7;
+    background: #1a1a1a;
+    border: round #ffffff;
     padding: 0 2;
     margin: 1 0;
     height: auto;
 }
 
+TerminalCard {
+    background: #0d0d0d;
+    border: round #ffffff;
+    padding: 0 2;
+    margin: 1 0;
+    height: auto;
+}
+TerminalCard.running {
+    border: round #ffffff;
+}
+TerminalCard.done {
+    border: round #2e2e2e;
+}
+TerminalCard.error {
+    border: round #ffffff;
+}
+.term-prompt {
+    color: #ffffff;
+    text-style: bold;
+    height: 1;
+}
+.term-cmd {
+    color: #e6e6e6;
+    background: #111111;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    height: auto;
+}
+.term-status {
+    color: #a8a8a8;
+    margin: 0 0 1 0;
+    height: 1;
+}
+.term-status.error {
+    color: #ffffff;
+    text-style: bold;
+}
+.term-status.ok {
+    color: #c0c0c0;
+}
+.term-section-label {
+    color: #7a7a7a;
+    text-style: italic;
+    height: 1;
+}
+.term-output {
+    color: #e6e6e6;
+    background: #111111;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    height: auto;
+    max-height: 18;
+    overflow-y: auto;
+}
+.term-output-empty {
+    color: #5e5e5e;
+    text-style: italic;
+}
+
 .subagent-header {
-    color: #cba6f7;
+    color: #ffffff;
     text-style: bold;
     height: 1;
 }
 
 .subagent-task {
-    color: #a6adc8;
+    color: #a8a8a8;
     margin: 0 0 1 0;
 }
 
 .subagent-output {
-    color: #cdd6f4;
+    color: #e6e6e6;
     margin: 0 0 1 0;
 }
 
 ThinkingIndicator {
     background: transparent;
-    color: #89b4fa;
+    color: #ffffff;
     padding: 0 2;
     height: 1;
 }
 
 ModalScreen {
-    background: #11111b 80%;
+    background: #000000 80%;
     align: center middle;
 }
 
@@ -391,20 +459,20 @@ ModalScreen {
     width: 70;
     height: auto;
     max-height: 80%;
-    background: #181825;
-    border: round #89b4fa;
+    background: #111111;
+    border: round #ffffff;
     padding: 1 2;
 }
 
 #modal-title {
-    color: #89b4fa;
+    color: #ffffff;
     text-style: bold;
     height: 1;
     margin-bottom: 1;
 }
 
 #modal-hint {
-    color: #a6adc8;
+    color: #a8a8a8;
     height: 1;
     margin-bottom: 1;
 }
@@ -412,8 +480,8 @@ ModalScreen {
 #modal-list {
     height: auto;
     max-height: 20;
-    background: #313244;
-    border: round #45475a;
+    background: #1a1a1a;
+    border: round #2e2e2e;
 }
 
 #modal-list > ListItem {
@@ -421,19 +489,19 @@ ModalScreen {
 }
 
 #modal-list > ListItem.--highlight {
-    background: #89b4fa;
-    color: #1e1e2e;
+    background: #ffffff;
+    color: #0a0a0a;
 }
 
 #modal-list > ListItem.--highlight Label {
-    color: #1e1e2e;
+    color: #0a0a0a;
 }
 
 #modal-input {
-    background: #313244;
-    border: tall #89b4fa;
+    background: #1a1a1a;
+    border: tall #ffffff;
     height: 3;
-    color: #cdd6f4;
+    color: #e6e6e6;
     margin-top: 1;
 }
 """

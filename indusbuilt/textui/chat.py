@@ -27,6 +27,7 @@ from .widgets import (
     SystemMemory,
     SystemSuccess,
     SystemWarning,
+    TerminalCard,
     ThinkingIndicator,
     ToolCard,
     UserMessage,
@@ -36,13 +37,21 @@ if TYPE_CHECKING:
     from .app import IndusBuiltApp
 
 
+# Grayscale colors for inline markup in the chat screen.
+C_NAME = "#ffffff"          # emphasized (white)
+C_DIM = "#a8a8a8"           # muted
+C_FAINT = "#7a7a7a"         # very muted
+C_TEXT = "#e6e6e6"          # body text
+C_BG = "#0a0a0a"            # background
+
+
 class SlashSuggestions(Container):
     """Autocomplete dropdown for slash commands."""
 
     DEFAULT_CSS = """
     SlashSuggestions {
-        background: #313244;
-        border: round #45475a;
+        background: #1a1a1a;
+        border: round #ffffff;
         height: auto;
         max-height: 12;
         margin: 0 2;
@@ -54,14 +63,15 @@ class SlashSuggestions(Container):
     .suggestion-item {
         height: 1;
         padding: 0 1;
-        color: #cdd6f4;
+        color: #e6e6e6;
     }
     .suggestion-item.selected {
-        background: #89b4fa;
-        color: #1e1e2e;
+        background: #ffffff;
+        color: #0a0a0a;
+        text-style: bold;
     }
     .suggestion-empty {
-        color: #6c7086;
+        color: #5e5e5e;
         text-style: italic;
         padding: 1;
     }
@@ -73,6 +83,7 @@ class SlashSuggestions(Container):
         self._matches: List[dict] = []
         self._selected: int = -1
         self._item_widgets: List[Static] = []
+        self._visible: bool = False
 
     def compose(self) -> ComposeResult:
         yield Static("", id="slash-suggestions-empty")
@@ -87,27 +98,38 @@ class SlashSuggestions(Container):
             self._matches = []
             self._selected = -1
             self.add_class("hidden")
+            self._visible = False
             return
 
-        prefix = text[1:].lower().strip()
+        # Strip the leading slash and split on whitespace so the suggestions
+        # stay visible while the user types arguments (e.g. "/skills foo").
+        raw = text[1:]
+        head = raw.split(None, 1)[0].lower() if raw.strip() else ""
+        prefix = head
+
         if not prefix:
             self._matches = list(self._commands)
         else:
+            # Fuzzy-ish: command names that start with the prefix OR
+            # multi-word names whose first word matches the prefix
+            # (e.g. "/create" matches "/create skill", "/create subagent"...).
             self._matches = [
                 c for c in self._commands
                 if c["name"].lower().startswith(prefix)
+                or c["name"].lower().split()[0].startswith(prefix)
             ]
         self._matches = self._matches[:8]
 
         if not self._matches:
             self.mount(Static("no matching commands", classes="suggestion-empty"))
             self.add_class("hidden")
+            self._visible = True
             return
 
         for cmd in self._matches:
             arg = f" {cmd['arg']}" if cmd.get("arg") else ""
             line = Static(
-                f"[#89b4fa]/{cmd['name']}[/]{arg}  [#a6adc8]{cmd['description']}[/]",
+                f"[#ffffff]/{cmd['name']}[/]{arg}  [#a8a8a8]{cmd['description']}[/]",
                 classes="suggestion-item",
                 markup=True,
             )
@@ -115,6 +137,7 @@ class SlashSuggestions(Container):
             self._item_widgets.append(line)
         self._selected = 0 if self._matches else -1
         self.remove_class("hidden")
+        self._visible = True
         self._highlight()
 
     def _highlight(self) -> None:
@@ -128,11 +151,21 @@ class SlashSuggestions(Container):
         self._highlight()
         return True
 
+    def is_visible(self) -> bool:
+        return self._visible
+
     def apply(self) -> Optional[str]:
         if self._selected < 0 or self._selected >= len(self._matches):
             return None
         cmd = self._matches[self._selected]
         return f"/{cmd['name']} "
+
+    def apply_and_submit(self) -> Optional[str]:
+        """Insert the selected command AND submit it immediately."""
+        if self._selected < 0 or self._selected >= len(self._matches):
+            return None
+        cmd = self._matches[self._selected]
+        return f"/{cmd['name']}"
 
 
 class ChatScreen(Screen):
@@ -140,6 +173,8 @@ class ChatScreen(Screen):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+l", "clear_log", "Clear"),
         Binding("escape", "dismiss_suggestions", "Dismiss"),
+        Binding("tab", "apply_suggestion", "Apply", show=False),
+        Binding("shift+tab", "apply_suggestion", "Apply", show=False),
     ]
 
     DEFAULT_CSS = TUI_CSS
@@ -161,7 +196,7 @@ class ChatScreen(Screen):
         model = app.runtime_state.get("model", "")
         with Horizontal(id="chat-header"):
             yield Static(
-                f"  [bold #89b4fa]IndusBuilt[/]  ·  [#fab387]{provider}[/] · [#cdd6f4]{model}[/]  ·  press [bold]/[/] for commands",
+                f"  [bold #ffffff]IndusBuilt[/]  ·  [#e6e6e6]{provider}[/] · [#c0c0c0]{model}[/]  ·  press [bold]/[/] for commands",
                 id="chat-header-row",
                 markup=True,
             )
@@ -177,8 +212,9 @@ class ChatScreen(Screen):
             )
             yield self._input
             yield Static(
-                "  [bold #fab387]Enter[/] send  ·  [bold #fab387]↑/↓[/] navigate suggestions  ·  "
-                "[bold #fab387]Tab[/] apply  ·  [bold #fab387]Esc[/] dismiss  ·  [bold #fab387]Ctrl+C[/] quit",
+                "  [bold #e6e6e6]Enter[/] send  ·  [bold #e6e6e6]↑/↓[/] navigate  ·  "
+                "[bold #e6e6e6]Tab[/] apply  ·  [bold #e6e6e6]Esc[/] dismiss  ·  "
+                "[bold #e6e6e6]Ctrl+C[/] quit",
                 id="chat-hint",
                 markup=True,
             )
@@ -227,9 +263,7 @@ class ChatScreen(Screen):
         if self._input is None or not self._input.has_focus:
             return
         suggestions = self._suggestions
-        if suggestions is None or suggestions.has_class("hidden"):
-            return
-        if not self._slash_mode:
+        if suggestions is None:
             return
         if event.key == "up":
             if suggestions.move(-1):
@@ -239,17 +273,28 @@ class ChatScreen(Screen):
             if suggestions.move(1):
                 event.prevent_default()
                 event.stop()
-        elif event.key == "tab":
-            new_text = suggestions.apply()
-            if new_text is not None:
-                self._input.value = new_text
-                self._input.cursor_position = len(new_text)
-                suggestions.update_for(new_text)
-                event.prevent_default()
-                event.stop()
+
+    def action_apply_suggestion(self) -> None:
+        """Insert the currently highlighted suggestion into the input.
+
+        Bound at the screen level so it works regardless of focus state.
+        Restores focus to the input afterwards.
+        """
+        if self._input is None or self._suggestions is None:
+            return
+        if not self._suggestions.is_visible():
+            return
+        new_text = self._suggestions.apply()
+        if new_text is not None:
+            self._input.value = new_text
+            self._input.cursor_position = len(new_text)
+            self._suggestions.update_for(new_text)
+        # Always make sure focus is back on the input so the user can
+        # keep typing.
+        self._input.focus()
 
     def action_dismiss_suggestions(self) -> None:
-        if self._suggestions is not None and not self._suggestions.has_class("hidden"):
+        if self._suggestions is not None and self._suggestions.is_visible():
             self._suggestions.update_for("")
             self._slash_mode = False
             return
@@ -328,7 +373,10 @@ class ChatScreen(Screen):
         self._scroll_to_end()
 
     def write_tool_start(self, call_id: str, name: str, args: dict) -> None:
-        card = ToolCard(name, args)
+        if name == "terminal":
+            card = TerminalCard(args or {})
+        else:
+            card = ToolCard(name, args)
         self._active_tools[call_id] = card
         self._mount(card)
 
@@ -341,7 +389,7 @@ class ChatScreen(Screen):
 
     def write_code_diff(self, path: str, action: str, before, after, diff_text: Optional[str]) -> None:
         header = Static(
-            f"[bold #cba6f7]◆ {action}[/] [#cdd6f4]{path}[/#cdd6f4]",
+            f"[bold #ffffff]◆ {action}[/] [#e6e6e6]{path}[/#e6e6e6]",
             id="diff-header",
             markup=True,
         )
@@ -361,9 +409,9 @@ class ChatScreen(Screen):
     @staticmethod
     def _diff_color(action: str) -> str:
         return {
-            "created_file": "#a6e3a1",
-            "edited": "#89b4fa",
-        }.get(action, "#cdd6f4")
+            "created_file": "#e6e6e6",
+            "edited": "#ffffff",
+        }.get(action, "#e6e6e6")
 
     @staticmethod
     def _guess_language(path: str) -> str:
@@ -408,12 +456,12 @@ class ChatScreen(Screen):
             self._mount(card)
         else:
             self._mount(SystemInfo(
-                f"[bold #cba6f7]◆ dispatching[/] [bold #89b4fa]{len(calls)}[/] [bold #cba6f7]subagents in parallel[/]"
+                f"[bold #ffffff]◆ dispatching[/] [bold #ffffff]{len(calls)}[/] [bold #ffffff]subagents in parallel[/]"
             ))
             for call in calls:
                 name = call.get("name", "")
                 task = (call.get("task") or "").replace("\n", " ")[:80]
-                self._mount(SystemInfo(f"  [#cba6f7]+-- {name}[/] [#a6adc8]{task}[/]"))
+                self._mount(SystemInfo(f"  [#ffffff]+-- {name}[/] [#a8a8a8]{task}[/]"))
 
     def write_subagent_end(self, name: str, output: str, elapsed: float, turns: int, error: Optional[str], task: str) -> None:
         if self._active_subagent is not None and self._active_subagent._name == name:

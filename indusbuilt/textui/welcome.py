@@ -44,13 +44,13 @@ class WelcomeScreen(Screen):
                 yield Static("The fastest coding agent", id="welcome-subtitle", markup=False)
                 yield Static("─" * 70, id="welcome-divider", markup=False)
                 yield Static(
-                    f"  [bold #fab387]provider[/bold #fab387] [#cdd6f4]{provider}[/#cdd6f4]"
-                    f"      [bold #fab387]model[/bold #fab387] [#cdd6f4]{model}[/#cdd6f4]",
+                    f"  [bold #e6e6e6]provider[/bold #e6e6e6] [#e6e6e6]{provider}[/#e6e6e6]"
+                    f"      [bold #e6e6e6]model[/bold #e6e6e6] [#c0c0c0]{model}[/#c0c0c0]",
                     id="welcome-info-provider",
                     markup=True,
                 )
                 yield Static(
-                    f"  [bold #fab387]sandbox[/bold #fab387] [#a6adc8]{sandbox}[/#a6adc8]",
+                    f"  [bold #e6e6e6]sandbox[/bold #e6e6e6] [#a8a8a8]{sandbox}[/#a8a8a8]",
                     id="welcome-info-sandbox",
                     markup=True,
                 )
@@ -62,7 +62,11 @@ class WelcomeScreen(Screen):
 
         with Horizontal(id="welcome-footer"):
             yield Static(f"IndusBuilt v{version}", id="welcome-footer-version")
-            yield Static("  ·  press [bold]Enter[/bold] to send  ·  [bold]/[/bold] for commands  ·  [bold]Ctrl+C[/bold] to quit", id="welcome-footer-hint", markup=True)
+            yield Static(
+                "  ·  press [bold]Enter[/bold] to send  ·  [bold]/[/bold] for commands  ·  [bold]Ctrl+C[/bold] to quit",
+                id="welcome-footer-hint",
+                markup=True,
+            )
 
     def on_mount(self) -> None:
         self._input_widget = self.query_one("#welcome-input", Input)

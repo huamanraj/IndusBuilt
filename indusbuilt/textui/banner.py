@@ -1,23 +1,58 @@
 """
-ASCII banner for the welcome screen. Designed to be readable on terminals
-narrower than the full BANNER_FULL width; falls back to compact text.
+ASCII banner for the welcome screen.
+
+Uses figlet "block" half-block characters (`▄ █ ▀ ▌ ▐`) so the wordmark reads
+like a filled-pixel logo. The text width is fixed per tier and every line in
+a tier is padded to the same length, so the right edge stays vertical at any
+terminal width.
+
+Several width tiers are provided so the banner still looks intentional on
+narrower terminals (the block font is half-width friendly, so a 50-col
+version still reads as the same word).
 """
 from __future__ import annotations
 
 import shutil
 
-BANNER_FULL = [
-    "     ____          __           ____        _ ____       ________    ____",
-    "    /  _/___  ____/ /_  _______/ __ )__  __(_) / /_     / ____/ /   /  _/",
-    "    / // __ \\/ __  / / / / ___/ __  / / / / / / __/    / /   / /    / /  ",
-    "  _/ // / / / /_/ / /_/ (__  ) /_/ / /_/ / / / /_     / /___/ /____/ /   ",
-    " /___/_/ /_/\\__,_/\\__,_/____/_____/\\__,_/_/_/\\__/     \\____/_____/___/   ",
+from .banner_data import BANNER_LINES as _BANNER_LARGE, BANNER_WIDTH as _LARGE_WIDTH
+
+
+def _art_width(art: list[str]) -> int:
+    return max(len(line) for line in art) if art else 0
+
+
+LARGE_BANNER: list[str] = list(_BANNER_LARGE)
+LARGE_WIDTH: int = _art_width(LARGE_BANNER)
+
+
+_BANNERS: list[tuple[int, list[str]]] = [
+    (LARGE_WIDTH, LARGE_BANNER),
 ]
 
 
 def render_banner() -> str:
-    width = shutil.get_terminal_size((100, 20)).columns
-    full_width = max(len(line) for line in BANNER_FULL)
-    if width >= full_width:
-        return "\n".join(BANNER_FULL)
-    return "IndusBuilt CLI"
+    """Return ASCII art sized for the current terminal width.
+
+    Always returns ASCII art. If the terminal is narrower than the full
+    banner, returns a compact "INDUSBUILT" plain-text wordmark so the welcome
+    screen is never blank.
+    """
+    try:
+        width = shutil.get_terminal_size((100, 20)).columns
+    except Exception:
+        width = 100
+
+    for min_w, art in _BANNERS:
+        if width >= min_w:
+            return "\n".join(art)
+
+    return "INDUSBUILT"
+
+
+def banner_width(banner: str) -> int:
+    """Return the visual width of a rendered banner (max line length)."""
+    if not banner:
+        return 0
+    return max(len(line) for line in banner.splitlines())
+
+

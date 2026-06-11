@@ -20,14 +20,22 @@ from textual.widgets import Static
 from ..agent import _format_diff
 
 
+# True black & white pygments style — keeps code blocks grayscale.
+try:
+    from pygments.styles.bw import BlackWhiteStyle
+    _CODE_THEME = BlackWhiteStyle
+except Exception:
+    _CODE_THEME = "monokai"
+
+
 # ── CodeBlock: shows diff with proper colors ────────────────────────────────
 class CodeBlock(Static):
     """A syntax-highlighted code block. Used for tool args, file contents, diffs."""
 
     DEFAULT_CSS = """
     CodeBlock {
-        background: #181825;
-        border: round #45475a;
+        background: #111111;
+        border: round #2e2e2e;
         padding: 0 1;
         margin: 0 0 1 0;
         height: auto;
@@ -45,7 +53,13 @@ class CodeBlock(Static):
         if not self._content:
             return Text("")
         try:
-            return Syntax(self._content, self._language, theme="monokai", word_wrap=False)
+            return Syntax(
+                self._content,
+                self._language,
+                theme=_CODE_THEME,
+                word_wrap=False,
+                background_color="#111111",
+            )
         except Exception:
             return Text(self._content)
 
@@ -56,49 +70,49 @@ class ToolCard(Container):
 
     DEFAULT_CSS = """
     ToolCard {
-        background: #313244;
-        border: round #45475a;
+        background: #1a1a1a;
+        border: round #2e2e2e;
         padding: 0 2;
         margin: 1 0;
         height: auto;
     }
     ToolCard.running {
-        border: round #89b4fa;
+        border: round #ffffff;
     }
     ToolCard.done {
-        border: round #a6e3a1;
+        border: round #2e2e2e;
     }
     ToolCard.error {
-        border: round #f38ba8;
+        border: round #ffffff;
     }
     .tool-header {
         height: 1;
-        color: #89b4fa;
+        color: #ffffff;
         text-style: bold;
     }
     .tool-header.done {
-        color: #a6e3a1;
+        color: #c0c0c0;
     }
     .tool-header.error {
-        color: #f38ba8;
+        color: #ffffff;
     }
     .tool-name {
-        color: #cba6f7;
+        color: #ffffff;
         text-style: bold;
     }
     .tool-state {
-        color: #a6adc8;
+        color: #a8a8a8;
     }
     .tool-args {
-        color: #a6adc8;
+        color: #a8a8a8;
         margin: 0 0 1 0;
     }
     .tool-result {
-        color: #a6adc8;
+        color: #a8a8a8;
         margin: 0;
     }
     .tool-args-label, .tool-result-label {
-        color: #9399b2;
+        color: #7a7a7a;
         text-style: italic;
     }
     """
@@ -120,12 +134,12 @@ class ToolCard(Container):
 
     def _render_header(self) -> str:
         if self.state == "running":
-            return f"● [bold]running[/bold]  [#cba6f7]{self.tool_name}[/]  [#9399b2]{self._elapsed:0.1f}s[/]"
+            return f"● [bold]running[/bold]  [#ffffff]{self.tool_name}[/]  [#7a7a7a]{self._elapsed:0.1f}s[/]"
         if self.state == "error":
             err = (self._result or {}).get("error", "failed")
-            return f"✗ [bold]error[/bold]    [#cba6f7]{self.tool_name}[/]  [#9399b2]{self._elapsed:0.2f}s[/]  [#f38ba8]{err[:80]}[/]"
+            return f"✗ [bold]error[/bold]    [#ffffff]{self.tool_name}[/]  [#7a7a7a]{self._elapsed:0.2f}s[/]  [#ffffff]{err[:80]}[/]"
         status = (self._result or {}).get("action") or "ok"
-        return f"✓ [bold]done[/bold]     [#cba6f7]{self.tool_name}[/]  [#9399b2]{self._elapsed:0.2f}s[/]  [dim]→ {status}[/]"
+        return f"✓ [bold]done[/bold]     [#ffffff]{self.tool_name}[/]  [#7a7a7a]{self._elapsed:0.2f}s[/]  [dim]→ {status}[/]"
 
     def _shorten(self, text: str, max_len: int) -> str:
         text = text.replace("\n", " ")
@@ -173,18 +187,15 @@ class ToolCard(Container):
 
     def _result_preview(self, result: Dict[str, Any]) -> str:
         if "error" in result:
-            return f"[#f38ba8]{self._shorten(str(result['error']), 200)}[/]"
+            return f"[#ffffff]{self._shorten(str(result['error']), 200)}[/]"
         if "content" in result and isinstance(result["content"], str):
             return f"[dim]read {len(result['content'])} chars[/]"
         if "files" in result:
             return f"[dim]read {len(result['files'])} files[/]"
         if "matches" in result and isinstance(result["matches"], list):
             return f"[dim]{len(result['matches'])} matches[/]"
-        if "tree" in result:
-            tree = result.get("tree", "")
-            return f"[dim]{len(tree.splitlines())} tree lines[/]"
         action = result.get("action") or "ok"
-        return f"[#a6e3a1]{action}[/]"
+        return f"[#e6e6e6]{action}[/]"
 
     def attach_diff(self, diff_widget: CodeBlock) -> None:
         if self._diff_widget is not None:
@@ -193,24 +204,214 @@ class ToolCard(Container):
         self.mount(diff_widget)
 
 
+# ── TerminalCard: dedicated visual for sandboxed shell commands ─────────────
+class TerminalCard(Container):
+    """Visual card for a single `terminal` tool invocation.
+
+    Renders the command in a shell-prompt style box with stdout/stderr panels
+    and a status row (exit code, elapsed time, cwd). Visually distinct from
+    a regular ToolCard so the user can tell at a glance that a shell command
+    ran.
+    """
+
+    DEFAULT_CSS = """
+    TerminalCard {
+        background: #0d0d0d;
+        border: round #ffffff;
+        padding: 0 2;
+        margin: 1 0;
+        height: auto;
+    }
+    TerminalCard.running {
+        border: round #ffffff;
+    }
+    TerminalCard.done {
+        border: round #2e2e2e;
+    }
+    TerminalCard.error {
+        border: round #ffffff;
+    }
+    .term-prompt {
+        color: #dcdcdc;
+        text-style: bold;
+        height: 1;
+    }
+    .term-cmd {
+        color: #dcdcdc;
+        background: #111111;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        height: auto;
+    }
+    .term-status {
+        color: #b8b8b8;
+        margin: 0 0 1 0;
+        height: 1;
+    }
+    .term-status.error {
+        color: #f0f0f0;
+        text-style: bold;
+    }
+    .term-status.ok {
+        color: #c8c8c8;
+    }
+    .term-section-label {
+        color: #8a8a8a;
+        text-style: italic;
+        height: 1;
+    }
+    .term-output {
+        color: #dcdcdc;
+        background: #111111;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        height: auto;
+        max-height: 18;
+        overflow-y: auto;
+    }
+    .term-output-empty {
+        color: #6a6a6a;
+        text-style: italic;
+    }
+    """
+
+    state: reactive[str] = reactive("running")
+
+    MAX_INLINE_CHARS = 4000
+
+    def __init__(self, args: Dict[str, Any]) -> None:
+        super().__init__()
+        self._command: str = str(args.get("command", "") or "")
+        self._cwd_arg: str = str(args.get("cwd", "") or "")
+        self._result: Optional[Dict[str, Any]] = None
+        self._elapsed: float = 0.0
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._render_prompt(), classes="term-prompt", markup=True)
+        yield Static(self._render_command(), classes="term-cmd", markup=True)
+        yield Static("", classes="term-status")
+        yield Static("", classes="term-section-label")
+        yield Static("", classes="term-output")
+
+    def _render_prompt(self) -> str:
+        if self.state == "running":
+            return "▸ terminal · running"
+        if self.state == "error":
+            return "▸ terminal · exit error"
+        return "▸ terminal · done"
+
+    def _render_command(self) -> str:
+        if not self._command:
+            return "[dim](empty command)[/dim]"
+        escaped = self._command.replace("[", "\\[")
+        return f"$ [bold #dcdcdc]{escaped}[/]"
+
+    def _truncate(self, text: str) -> str:
+        if not text:
+            return ""
+        if len(text) <= self.MAX_INLINE_CHARS:
+            return text
+        return (
+            text[: self.MAX_INLINE_CHARS]
+            + f"\n... [truncated for display, {len(text)} chars total]"
+        )
+
+    def update_result(self, result: Dict[str, Any], elapsed: float) -> None:
+        self._result = result
+        self._elapsed = elapsed
+        if "error" in result:
+            self.state = "error"
+        else:
+            self.state = "done"
+        self._refresh_view()
+
+    def _refresh_view(self) -> None:
+        self.set_class(self.state == "running", "running")
+        self.set_class(self.state == "done", "done")
+        self.set_class(self.state == "error", "error")
+        try:
+            prompt = self.query_one(".term-prompt", Static)
+            prompt.update(self._render_prompt())
+        except Exception:
+            pass
+        try:
+            status = self.query_one(".term-status", Static)
+            label = self.query_one(".term-section-label", Static)
+            output = self.query_one(".term-output", Static)
+
+            status.set_class(False, "error")
+            status.set_class(False, "ok")
+
+            cwd_text = (
+                f"[dim]cwd:[/dim] {self._cwd_arg}" if self._cwd_arg else "[dim]cwd:[/dim] (sandbox root)"
+            )
+
+            if self._result is None:
+                status.update("")
+                label.update("")
+                output.update("")
+                return
+
+            exit_code = self._result.get("exit_code", "—")
+            stdout_chars = self._result.get("stdout_chars", 0)
+            stderr_chars = self._result.get("stderr_chars", 0)
+            truncated = bool(self._result.get("truncated"))
+
+            status_line = (
+                f"{cwd_text}  [dim]·[/dim]  exit [bold #dcdcdc]{exit_code}[/]  "
+                f"[dim]·[/dim]  {self._elapsed:0.2f}s  "
+                f"[dim]·[/dim]  stdout {stdout_chars}c  stderr {stderr_chars}c"
+                + ("  [dim]·[/dim]  [italic]output offloaded[/italic]" if truncated else "")
+            )
+
+            if self.state == "error":
+                err_text = str(self._result.get("error", ""))
+                status.set_class(True, "error")
+                status.update(status_line + (f"  ·  {err_text}" if err_text else ""))
+            else:
+                status.set_class(True, "ok")
+                status.update(status_line)
+
+            stdout = str(self._result.get("stdout", "") or "")
+            stderr = str(self._result.get("stderr", "") or "")
+
+            if not stdout and not stderr:
+                label.update("[dim]output[/dim]")
+                output.set_class(True, "term-output-empty")
+                output.update("(no output)")
+                return
+
+            sections: list = []
+            if stdout:
+                sections.append(f"[dim]stdout[/dim]\n{self._truncate(stdout)}")
+            if stderr:
+                sections.append(f"[dim]stderr[/dim]\n{self._truncate(stderr)}")
+            label.update("[dim]output[/dim]")
+            output.set_class(False, "term-output-empty")
+            output.update("\n\n".join(sections))
+        except Exception:
+            pass
+
+
+
 # ── User message ────────────────────────────────────────────────────────────
 class UserMessage(Container):
     DEFAULT_CSS = """
     UserMessage {
-        background: #313244;
-        color: #cdd6f4;
+        background: #1a1a1a;
+        color: #e6e6e6;
         padding: 1 2;
         margin: 1 0 0 6;
-        border: round #45475a;
+        border: round #2e2e2e;
         height: auto;
     }
     .user-prefix {
-        color: #fab387;
+        color: #ffffff;
         text-style: bold;
         margin-bottom: 1;
     }
     .user-body {
-        color: #cdd6f4;
+        color: #e6e6e6;
     }
     """
 
@@ -228,21 +429,21 @@ class AssistantMessage(Container):
     DEFAULT_CSS = """
     AssistantMessage {
         background: transparent;
-        color: #cdd6f4;
+        color: #e6e6e6;
         padding: 1 2;
         margin: 1 6 0 0;
         height: auto;
     }
     .assistant-prefix {
-        color: #89b4fa;
+        color: #ffffff;
         text-style: bold;
         margin-bottom: 1;
     }
     .assistant-body {
-        color: #cdd6f4;
+        color: #e6e6e6;
     }
     .assistant-body-streaming {
-        color: #bac2de;
+        color: #c0c0c0;
     }
     """
 
@@ -275,7 +476,7 @@ class AssistantMessage(Container):
 class SystemInfo(Static):
     DEFAULT_CSS = """
     SystemInfo {
-        color: #a6adc8;
+        color: #a8a8a8;
         padding: 0 2;
         margin: 1 0;
         height: auto;
@@ -286,7 +487,7 @@ class SystemInfo(Static):
 class SystemSuccess(Static):
     DEFAULT_CSS = """
     SystemSuccess {
-        color: #a6e3a1;
+        color: #ffffff;
         padding: 0 2;
         margin: 1 0;
         height: auto;
@@ -297,7 +498,7 @@ class SystemSuccess(Static):
 class SystemWarning(Static):
     DEFAULT_CSS = """
     SystemWarning {
-        color: #f9e2af;
+        color: #c0c0c0;
         padding: 0 2;
         margin: 1 0;
         height: auto;
@@ -308,7 +509,8 @@ class SystemWarning(Static):
 class SystemError(Static):
     DEFAULT_CSS = """
     SystemError {
-        color: #f38ba8;
+        color: #ffffff;
+        text-style: bold;
         padding: 0 2;
         margin: 1 0;
         height: auto;
@@ -319,26 +521,26 @@ class SystemError(Static):
 class SystemMemory(Container):
     DEFAULT_CSS = """
     SystemMemory {
-        background: #313244;
-        border: round #45475a;
-        color: #cdd6f4;
+        background: #1a1a1a;
+        border: round #2e2e2e;
+        color: #e6e6e6;
         padding: 1 2;
         margin: 1 0;
         height: auto;
     }
     .memory-title {
-        color: #cba6f7;
+        color: #ffffff;
         text-style: bold;
         margin-bottom: 1;
     }
     .memory-row {
-        color: #bac2de;
+        color: #c0c0c0;
     }
     .memory-label {
-        color: #9399b2;
+        color: #9a9a9a;
     }
     .memory-value {
-        color: #cdd6f4;
+        color: #e6e6e6;
     }
     """
 
@@ -372,11 +574,15 @@ class HookNotice(Static):
 
     DEFAULT_CSS = """
     HookNotice {
-        color: #a6adc8;
+        color: #a8a8a8;
         padding: 0 2;
         margin: 0;
         height: 1;
     }
+    .hook-decision-allow { color: #e6e6e6; }
+    .hook-decision-block { color: #ffffff; text-style: bold; }
+    .hook-decision-warn  { color: #c0c0c0; }
+    .hook-decision-ask   { color: #ffffff; }
     """
 
     def __init__(self, hook_name: str, event: str, decision: str, reason: str, elapsed: float, error: Optional[str]) -> None:
@@ -389,59 +595,58 @@ class HookNotice(Static):
         self._error = error
 
     def render(self) -> RenderResult:
-        decision_class = self.DECISION_CLASS.get(self._decision, "hook-decision-allow")
         text = Text()
-        text.append("⚙ ", style="#cba6f7")
+        text.append("⚙ ", style="#ffffff")
         text.append("hook ", style="dim")
-        text.append(self._hook_name, style="bold #cba6f7")
+        text.append(self._hook_name, style="bold #ffffff")
         text.append(f"  {self._event}  ", style="dim")
         text.append(self._decision, style=f"bold {self._decision_color()}")
         text.append(f"  {self._elapsed:0.2f}s", style="dim")
         if self._reason:
-            text.append(f"  · {self._reason[:80]}", style="italic #9399b2")
+            text.append(f"  · {self._reason[:80]}", style="italic #9a9a9a")
         if self._error:
-            text.append(f"  · {self._error[:80]}", style="#f38ba8")
+            text.append(f"  · {self._error[:80]}", style="#ffffff bold")
         return text
 
     def _decision_color(self) -> str:
         return {
-            "allow": "#a6e3a1",
-            "block": "#f38ba8",
-            "warn":  "#f9e2af",
-            "ask":   "#cba6f7",
-        }.get(self._decision, "#a6e3a1")
+            "allow": "#e6e6e6",
+            "block": "#ffffff",
+            "warn":  "#c0c0c0",
+            "ask":   "#ffffff",
+        }.get(self._decision, "#e6e6e6")
 
 
 # ── Subagent card ──────────────────────────────────────────────────────────
 class SubagentCard(Container):
     DEFAULT_CSS = """
     SubagentCard {
-        background: #313244;
-        border: round #cba6f7;
+        background: #1a1a1a;
+        border: round #ffffff;
         padding: 0 2;
         margin: 1 0;
         height: auto;
     }
     .subagent-header {
-        color: #cba6f7;
+        color: #ffffff;
         text-style: bold;
         height: 1;
     }
     .subagent-status-running {
-        color: #89b4fa;
+        color: #ffffff;
     }
     .subagent-status-done {
-        color: #a6e3a1;
+        color: #c0c0c0;
     }
     .subagent-status-error {
-        color: #f38ba8;
+        color: #ffffff;
     }
     .subagent-task {
-        color: #a6adc8;
+        color: #a8a8a8;
         margin: 0 0 1 0;
     }
     .subagent-output {
-        color: #cdd6f4;
+        color: #e6e6e6;
         margin: 0 0 1 0;
     }
     """
@@ -460,10 +665,10 @@ class SubagentCard(Container):
 
     def _header(self) -> str:
         if self._state == "running":
-            return f"● running subagent  [#cba6f7]{self._name}[/]"
+            return f"● running subagent  [#ffffff]{self._name}[/]"
         if self._state == "error":
-            return f"✗ subagent error   [#cba6f7]{self._name}[/]"
-        return f"✓ subagent done    [#cba6f7]{self._name}[/]"
+            return f"✗ subagent error   [#ffffff]{self._name}[/]"
+        return f"✓ subagent done    [#ffffff]{self._name}[/]"
 
     def _shorten(self, text: str, max_len: int) -> str:
         text = text.replace("\n", " ")
@@ -481,7 +686,7 @@ class SubagentCard(Container):
         try:
             out = self.query_one(".subagent-output", Static)
             if error:
-                out.update(f"[#f38ba8]{error}[/]")
+                out.update(f"[#ffffff]{error}[/]")
             else:
                 preview = self._shorten(output, 600)
                 out.update(preview)
@@ -494,7 +699,7 @@ class ThinkingIndicator(Static):
     DEFAULT_CSS = """
     ThinkingIndicator {
         background: transparent;
-        color: #89b4fa;
+        color: #ffffff;
         padding: 0 2;
         height: 1;
     }
@@ -514,7 +719,7 @@ class ThinkingIndicator(Static):
     def _tick(self) -> None:
         self._frame_index = (self._frame_index + 1) % len(self._FRAMES)
         frame = self._FRAMES[self._frame_index]
-        self.update(f"{frame} [#89b4fa]{self._label}[/]")
+        self.update(f"{frame} [#ffffff]{self._label}[/]")
 
     def on_unmount(self) -> None:
         if self._timer is not None:

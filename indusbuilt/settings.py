@@ -33,6 +33,12 @@ SUBAGENT_MODEL_CHOICES = {
     "gemini": ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-pro"],
 }
 
+ROUTER_MODEL_CHOICES = {
+    "openai": ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o", "gpt-4.1"],
+    "anthropic": ["claude-haiku-3-5-20241022", "claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"],
+    "gemini": ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-pro"],
+}
+
 
 def _config_path() -> Path:
     """Return the per-user config file path."""
@@ -51,6 +57,10 @@ def _default_settings() -> Dict[str, Any]:
         "provider": "openai",
         "api_keys": {provider: "" for provider in PROVIDERS},
         "models": dict(DEFAULT_MODELS),
+        "subagent_models": dict(DEFAULT_SUBAGENT_MODELS),
+        "router_enabled": True,
+        "router_provider": "",
+        "router_models": {},
     }
 
 
@@ -88,6 +98,28 @@ def load_settings() -> Dict[str, Any]:
                 model_name = models.get(provider_name, "")
                 if isinstance(model_name, str) and model_name.strip():
                     defaults["models"][provider_name] = model_name.strip()
+
+        subagent_models = data.get("subagent_models", {})
+        if isinstance(subagent_models, dict):
+            for provider_name in PROVIDERS:
+                model_name = subagent_models.get(provider_name, "")
+                if isinstance(model_name, str) and model_name.strip():
+                    defaults["subagent_models"][provider_name] = model_name.strip()
+
+        router_enabled = data.get("router_enabled")
+        if isinstance(router_enabled, bool):
+            defaults["router_enabled"] = router_enabled
+
+        router_provider = data.get("router_provider", "")
+        if isinstance(router_provider, str) and router_provider in PROVIDERS:
+            defaults["router_provider"] = router_provider
+
+        router_models = data.get("router_models", {})
+        if isinstance(router_models, dict):
+            for provider_name in PROVIDERS:
+                model_name = router_models.get(provider_name, "")
+                if isinstance(model_name, str) and model_name.strip():
+                    defaults["router_models"][provider_name] = model_name.strip()
 
         return defaults
     except Exception:
@@ -177,6 +209,44 @@ def set_subagent_model(settings: Dict[str, Any], provider: str, model: str) -> N
     if "subagent_models" not in settings or not isinstance(settings["subagent_models"], dict):
         settings["subagent_models"] = {}
     settings["subagent_models"][provider] = model.strip()
+
+
+def get_router_enabled(settings: Dict[str, Any]) -> bool:
+    return bool(settings.get("router_enabled", True))
+
+
+def set_router_enabled(settings: Dict[str, Any], enabled: bool) -> None:
+    settings["router_enabled"] = bool(enabled)
+
+
+def get_router_provider(settings: Dict[str, Any]) -> str:
+    provider = settings.get("router_provider", "")
+    if isinstance(provider, str) and provider in PROVIDERS:
+        return provider
+    return get_active_provider(settings)
+
+
+def set_router_provider(settings: Dict[str, Any], provider: str) -> None:
+    if provider in PROVIDERS:
+        settings["router_provider"] = provider
+    else:
+        settings["router_provider"] = ""
+
+
+def get_router_model(settings: Dict[str, Any], provider: str = "") -> str:
+    if not provider:
+        provider = get_router_provider(settings)
+    router_models = settings.get("router_models", {})
+    value = router_models.get(provider, "") if isinstance(router_models, dict) else ""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return get_model(settings, provider)
+
+
+def set_router_model(settings: Dict[str, Any], provider: str, model: str) -> None:
+    if "router_models" not in settings or not isinstance(settings["router_models"], dict):
+        settings["router_models"] = {}
+    settings["router_models"][provider] = model.strip()
 
 
 def get_config_file_path() -> Path:

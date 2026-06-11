@@ -12,12 +12,14 @@ import getpass
 import json
 import os
 import queue
+import shlex
+import subprocess
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from litellm import completion
 
@@ -29,12 +31,12 @@ from .events import (
     AssistantEnd,
     AssistantStart,
     AssistantToken,
-    CodeDiff,
     Error as ErrorEvent,
     EventSink,
     HookFired,
     Info,
     MemoryStatus,
+    RouterDecision,
     SessionEnd,
     SessionStart,
     SlashHandled,
@@ -53,15 +55,22 @@ from .hooks import HookEvent, HookEventContext, HookRegistry
 from .settings import (
     MODEL_CHOICES,
     PROVIDERS,
+    ROUTER_MODEL_CHOICES,
     SUBAGENT_MODEL_CHOICES,
     get_active_provider,
     get_api_key,
     get_model,
+    get_router_enabled,
+    get_router_model,
+    get_router_provider,
     get_subagent_model,
     save_settings,
     set_active_provider,
     set_api_key,
     set_model,
+    set_router_enabled,
+    set_router_model,
+    set_router_provider,
     set_subagent_model,
 )
 from .skill_commands import SkillCommandHandler
@@ -98,269 +107,112 @@ def make_tools(
     context_manager: Optional[ContextManager] = None,
     conversation_ref: Optional[List[Dict[str, Any]]] = None,
 ):
-    """Returns the core tools bound to a sandbox_root."""
+    """Returns the core tools bound to a sandbox_root.
 
-    def read_file_tool(filename: str, offset: int = 0, limit: int = 50) -> Dict[str, Any]:
-        try:
-            full_path = resolve_sandboxed_path(filename, sandbox_root)
-            lines = full_path.read_text(encoding="utf-8").splitlines()
-            total = len(lines)
-            start = max(0, offset)
-            end = min(total, start + max(1, limit))
-            chunk = "\n".join(lines[start:end])
-            result: Dict[str, Any] = {
-                "file_path": str(full_path),
-                "content": chunk,
-                "lines_returned": end - start,
-                "total_lines": total,
-                "offset": start,
-            }
-            if end < total:
-                result["has_more"] = True
-                result["next_offset"] = end
-            return result
-        except ValueError as e:
-            return {"error": str(e)}
-        except FileNotFoundError:
-            return {"error": f"File not found: {filename}"}
-        except Exception as e:
-            return {"error": str(e)}
+    As of v2.4.0 the agent is shell-first: the only direct tool is `terminal`.
+    All file inspection, navigation, searching, and editing must be done via
+    shell one-liners (cat, ls, find, grep -rn, sed, python -c, etc.) so the
+    agent can combine steps and stay token-efficient.
+    """
 
-    def read_files_tool(filenames: List[str], limit: int = 50) -> Dict[str, Any]:
-        results = {}
-        for filename in filenames:
-            try:
-                full_path = resolve_sandboxed_path(filename, sandbox_root)
-                lines = full_path.read_text(encoding="utf-8").splitlines()
-                total = len(lines)
-                chunk = "\n".join(lines[:limit])
-                entry: Dict[str, Any] = {
-                    "content": chunk,
-                    "total_lines": total,
-                    "lines_returned": min(limit, total),
-                }
-                if total > limit:
-                    entry["has_more"] = True
-                    entry["next_offset"] = limit
-                results[filename] = entry
-            except ValueError as e:
-                results[filename] = {"error": str(e)}
-            except FileNotFoundError:
-                results[filename] = {"error": f"File not found: {filename}"}
-            except Exception as e:
-                results[filename] = {"error": str(e)}
-        return {"files": results, "count": len(filenames)}
-
-    def list_files_tool(path: str = ".") -> Dict[str, Any]:
-        try:
-            full_path = resolve_sandboxed_path(path, sandbox_root)
-            if not full_path.is_dir():
-                return {"error": f"Not a directory: {path}"}
-            all_files = []
-            for item in sorted(full_path.iterdir()):
-                all_files.append({
-                    "filename": item.name,
-                    "type": "file" if item.is_file() else "dir"
-                })
-            return {"path": str(full_path), "files": all_files}
-        except ValueError as e:
-            return {"error": str(e)}
-        except Exception as e:
-            return {"error": str(e)}
-
-    def edit_file_tool(
-        path: str,
-        new_str: str = "",
-        old_str: str = "",
-        start_line: Optional[int] = None,
-        end_line: Optional[int] = None,
+    def terminal_tool(
+        command: str,
+        cwd: Optional[str] = None,
+        timeout: int = 60,
     ) -> Dict[str, Any]:
+        """Run a shell command inside the sandbox and return its output.
+
+        Use this for ANY task that is faster / cheaper as a shell one-liner
+        instead of chaining dedicated tools. Examples:
+          - `dir` / `ls -la` to list a directory
+          - `python -c "..."` to evaluate a snippet
+          - `find . -name "*.py" | head -50` to find files
+          - `cat file.py` for a quick peek at a small file
+          - `git status`, `git diff`, `git log -10`
+          - `pip list`, `node -v`, etc.
+
+        The command is executed with `cwd` resolved under the sandbox.
+        Output is captured (stdout + stderr) and truncated to roughly
+        MAX_TERMINAL_CHARS to keep the agent context small. On truncation
+        the response says so and points you at the offloaded file.
+        """
+        MAX_TERMINAL_CHARS = 8000
+        MAX_TIMEOUT = 300
+
         try:
-            full_path = resolve_sandboxed_path(path, sandbox_root)
-            full_path.parent.mkdir(parents=True, exist_ok=True)
+            if not isinstance(command, str) or not command.strip():
+                return {"error": "terminal: 'command' must be a non-empty string."}
+            effective_timeout = max(1, min(int(timeout), MAX_TIMEOUT))
 
-            if old_str == "" and start_line is None:
-                full_path.write_text(new_str, encoding="utf-8")
-                return {"path": str(full_path), "action": "created_file"}
+            if cwd:
+                workdir = resolve_sandboxed_path(cwd, sandbox_root)
+            else:
+                workdir = sandbox_root
 
-            if not full_path.exists():
-                return {"error": f"File not found: {path}"}
+            if not workdir.is_dir():
+                return {"error": f"terminal: cwd is not a directory: {workdir}"}
 
-            original = full_path.read_text(encoding="utf-8")
-            file_lines = original.splitlines()
-            trailing_newline = original.endswith("\n")
-
-            if start_line is not None:
-                s = max(0, start_line - 1)
-                e = min(len(file_lines), end_line if end_line is not None else start_line)
-                replacement = new_str.splitlines() if new_str else []
-                result = file_lines[:s] + replacement + file_lines[e:]
-                suffix = "\n" if trailing_newline else ""
-                full_path.write_text("\n".join(result) + suffix, encoding="utf-8")
-                return {
-                    "path": str(full_path),
-                    "action": "edited",
-                    "method": "line_range",
-                    "replaced_lines": f"{start_line}-{end_line or start_line}",
-                }
-
-            if old_str in original:
-                full_path.write_text(original.replace(old_str, new_str, 1), encoding="utf-8")
-                return {"path": str(full_path), "action": "edited", "method": "exact"}
-
-            old_lines = old_str.splitlines()
-            n = len(old_lines)
-            match_start = None
-            if n:
-                for i in range(len(file_lines) - n + 1):
-                    if all(
-                        file_lines[i + j].strip() == old_lines[j].strip()
-                        for j in range(n)
-                    ):
-                        match_start = i
-                        break
-
-            if match_start is not None:
-                result = file_lines[:match_start] + new_str.splitlines() + file_lines[match_start + n:]
-                suffix = "\n" if trailing_newline else ""
-                full_path.write_text("\n".join(result) + suffix, encoding="utf-8")
-                return {"path": str(full_path), "action": "edited", "method": "fuzzy"}
-
-            return {"path": str(full_path), "action": "old_str_not_found"}
-        except ValueError as e:
-            return {"error": str(e)}
-        except Exception as e:
-            return {"error": str(e)}
-
-    TREE_SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv", ".indusbuilt", "build", "dist", ".next", ".nuxt"}
-
-    def tree_tool(path: str = ".", depth: int = 3) -> Dict[str, Any]:
-        try:
-            root = resolve_sandboxed_path(path, sandbox_root)
-            if not root.is_dir():
-                return {"error": f"Not a directory: {path}"}
-
-            lines: List[str] = []
-            total_files = 0
-            truncated = False
-
-            def _walk(current: Path, prefix: str, current_depth: int) -> None:
-                nonlocal total_files, truncated
-                if current_depth > depth:
-                    return
-                try:
-                    entries = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
-                except PermissionError:
-                    return
-                shown = [e for e in entries if e.name not in TREE_SKIP]
-                for i, entry in enumerate(shown):
-                    if total_files >= 200:
-                        truncated = True
-                        return
-                    last = i == len(shown) - 1
-                    connector = "`-- " if last else "|-- "
-                    label = entry.name + ("/" if entry.is_dir() else "")
-                    lines.append(prefix + connector + label)
-                    if entry.is_file():
-                        total_files += 1
-                    elif entry.is_dir():
-                        extension = "    " if last else "|   "
-                        _walk(entry, prefix + extension, current_depth + 1)
-
-            lines.append(root.name + "/")
-            _walk(root, "", 1)
-            result: Dict[str, Any] = {"tree": "\n".join(lines), "total_files_shown": total_files}
-            if truncated:
-                result["truncated"] = True
-                result["note"] = "Tree truncated at 200 entries. Use search_files or list_files to explore further."
-            return result
-        except ValueError as e:
-            return {"error": str(e)}
-        except Exception as e:
-            return {"error": str(e)}
-
-    def search_files_tool(pattern: str, path: str = ".") -> Dict[str, Any]:
-        import fnmatch
-        try:
-            root = resolve_sandboxed_path(path, sandbox_root)
-            matches: List[str] = []
-            for p in sorted(root.rglob("*")):
-                if any(part in TREE_SKIP for part in p.relative_to(root).parts):
-                    continue
-                if p.is_file() and fnmatch.fnmatch(p.name, pattern.split("/")[-1]):
-                    if fnmatch.fnmatch(str(p.relative_to(root)), pattern):
-                        matches.append(str(p.relative_to(sandbox_root)))
-                elif p.is_file() and fnmatch.fnmatch(str(p.relative_to(root)), pattern):
-                    matches.append(str(p.relative_to(sandbox_root)))
-                if len(matches) >= 100:
-                    break
-            result: Dict[str, Any] = {"matches": matches, "count": len(matches)}
-            if len(matches) == 100:
-                result["truncated"] = True
-            return result
-        except ValueError as e:
-            return {"error": str(e)}
-        except Exception as e:
-            return {"error": str(e)}
-
-    def grep_tool(pattern: str, path: str = ".", include: str = "*") -> Dict[str, Any]:
-        import re, fnmatch
-        try:
-            root = resolve_sandboxed_path(path, sandbox_root)
+            use_shell = os.name == "nt"
+            start = time.time()
             try:
-                regex = re.compile(pattern, re.IGNORECASE)
-            except re.error as e:
-                return {"error": f"Invalid regex: {e}"}
+                proc = subprocess.run(
+                    command if use_shell else ["bash", "-lc", command],
+                    cwd=str(workdir),
+                    shell=use_shell,
+                    capture_output=True,
+                    text=True,
+                    timeout=effective_timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                return {
+                    "error": f"terminal: command timed out after {effective_timeout}s.",
+                    "command": command,
+                    "cwd": str(workdir),
+                    "partial_stdout": (exc.stdout or "")[:MAX_TERMINAL_CHARS] if isinstance(exc.stdout, str) else "",
+                }
+            except FileNotFoundError as exc:
+                return {"error": f"terminal: required executable not found ({exc})."}
+            except Exception as exc:
+                return {"error": f"terminal: failed to launch: {exc}"}
 
-            hits: List[Dict[str, Any]] = []
-            files_searched = 0
+            elapsed = time.time() - start
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            truncated_stdout = False
+            truncated_stderr = False
 
-            for p in sorted(root.rglob("*")):
-                if any(part in TREE_SKIP for part in p.relative_to(root).parts):
-                    continue
-                if not p.is_file():
-                    continue
-                if not fnmatch.fnmatch(p.name, include):
-                    continue
-                try:
-                    text = p.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
-                    continue
-                files_searched += 1
-                for lineno, line in enumerate(text.splitlines(), 1):
-                    if regex.search(line):
-                        hits.append({
-                            "file": str(p.relative_to(sandbox_root)),
-                            "line": lineno,
-                            "text": line.strip()[:120],
-                        })
-                        if len(hits) >= 50:
-                            break
-                if len(hits) >= 50:
-                    break
+            if len(stdout) > MAX_TERMINAL_CHARS:
+                offload_dir = sandbox_root / ".indusbuilt" / "terminal_offload"
+                offload_dir.mkdir(parents=True, exist_ok=True)
+                offload_path = offload_dir / f"terminal_{uuid.uuid4().hex[:8]}.log"
+                offload_path.write_text(stdout, encoding="utf-8", errors="replace")
+                stdout = stdout[:MAX_TERMINAL_CHARS] + (
+                    f"\n... [truncated, full output saved to {offload_path}]"
+                )
+                truncated_stdout = True
+            if len(stderr) > MAX_TERMINAL_CHARS:
+                stderr = stderr[:MAX_TERMINAL_CHARS] + "\n... [truncated]"
 
             result: Dict[str, Any] = {
-                "matches": hits,
-                "match_count": len(hits),
-                "files_searched": files_searched,
+                "command": command,
+                "cwd": str(workdir),
+                "exit_code": proc.returncode,
+                "elapsed_s": round(elapsed, 2),
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdout_chars": len(proc.stdout or ""),
+                "stderr_chars": len(proc.stderr or ""),
             }
-            if len(hits) == 50:
+            if truncated_stdout:
                 result["truncated"] = True
-                result["note"] = "Truncated at 50 matches. Narrow the pattern or path to get more specific results."
+            if proc.returncode != 0:
+                result["error"] = f"terminal: command exited with code {proc.returncode}."
             return result
-        except ValueError as e:
-            return {"error": str(e)}
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as exc:
+            return {"error": f"terminal: unexpected error: {exc}"}
 
     tools = {
-        "read_file":    read_file_tool,
-        "read_files":   read_files_tool,
-        "list_files":   list_files_tool,
-        "tree":         tree_tool,
-        "search_files": search_files_tool,
-        "grep":         grep_tool,
-        "edit_file":    edit_file_tool,
+        "terminal":     terminal_tool,
     }
 
     if skill_registry is not None:
@@ -385,200 +237,40 @@ CORE_OPENAI_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "read_file",
+            "name": "terminal",
             "description": (
-                "Read lines from a file in the sandbox. Returns 50 lines by default starting at offset 0. "
-                "When the response includes has_more=true, call again with next_offset to read further. "
-                "Use limit to read more lines at once if needed."
+                "Execute a shell command inside the sandbox and return its output. "
+                "This is the agent's PRIMARY (and only direct) tool. Use it for everything:\n"
+                "  - listing or exploring the project:   `ls -la` / `dir`, `find . -name '*.py' | head -50`\n"
+                "  - reading files:                     `cat file.py` (small) or `sed -n '1,200p' file.py` (paged)\n"
+                "  - searching content:                 `grep -rn 'pattern' src/ --include='*.py'`\n"
+                "  - editing / creating files:          `python -c 'open(\"f.py\",\"w\").write(...)'`, "
+                "                                        `sed -i 's/old/new/g' file`, or `printf ... > file`\n"
+                "  - running tests/builds/scripts:      `pytest -x -q`, `npm test`, `python -m build`\n"
+                "  - inspecting the environment:        `git status`, `git diff`, `pip list`, `node -v`\n"
+                "Combine steps with `&&` / `;` / pipes so a single terminal call replaces many separate tool "
+                "calls. Output is truncated to ~8000 chars; longer output is saved under "
+                ".indusbuilt/terminal_offload/ and the path is returned in the result. "
+                "The command is sandboxed to the project root."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {
+                    "command": {
                         "type": "string",
-                        "description": "Relative path of the file to read."
+                        "description": "Shell command to run. On Windows uses cmd.exe; on POSIX uses bash -lc."
                     },
-                    "offset": {
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory (relative to sandbox). Defaults to the sandbox root."
+                    },
+                    "timeout": {
                         "type": "integer",
-                        "description": "Line number to start reading from (0-indexed). Defaults to 0.",
-                        "default": 0
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Number of lines to read. Defaults to 50. Increase if you need more context.",
-                        "default": 50
+                        "description": "Timeout in seconds. Defaults to 60, max 300.",
+                        "default": 60
                     }
                 },
-                "required": ["filename"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_files",
-            "description": (
-                "Read multiple files in a single call. Returns the first `limit` lines of each file. "
-                "Use this instead of calling read_file repeatedly when you need context from several files at once. "
-                "Files with has_more=true can be continued with read_file using next_offset."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "filenames": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of relative file paths to read."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Lines to read per file. Defaults to 50.",
-                        "default": 50
-                    }
-                },
-                "required": ["filenames"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_files",
-            "description": "Lists files and directories inside a single directory (one level only). Use tree for a full recursive overview.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative directory path to list. Defaults to '.'."
-                    }
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "tree",
-            "description": (
-                "Show a recursive directory tree of the project. "
-                "Use this first when exploring an unfamiliar codebase — it gives you the full structure "
-                "so you can decide which files to read. Skips noise dirs (.git, node_modules, etc.)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Root directory to tree. Defaults to '.'.",
-                        "default": "."
-                    },
-                    "depth": {
-                        "type": "integer",
-                        "description": "Max depth to recurse. Defaults to 3.",
-                        "default": 3
-                    }
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_files",
-            "description": (
-                "Find files by name or glob pattern (e.g. '*.py', '**/*.test.ts', 'config.*'). "
-                "Use when you know what kind of file you're looking for but not exactly where it is."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Glob pattern to match against file paths (e.g. '*.py', '**/*.json')."
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory to search in. Defaults to '.'.",
-                        "default": "."
-                    }
-                },
-                "required": ["pattern"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "grep",
-            "description": (
-                "Search file contents for a pattern (string or regex). "
-                "Returns matching lines with file path and line number. "
-                "Use to find where a function is defined, where a variable is used, "
-                "which files import a module, etc."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "String or regex pattern to search for."
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory or file to search in. Defaults to '.'.",
-                        "default": "."
-                    },
-                    "include": {
-                        "type": "string",
-                        "description": "Filename glob to filter which files are searched (e.g. '*.py', '*.ts'). Defaults to '*'.",
-                        "default": "*"
-                    }
-                },
-                "required": ["pattern"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "edit_file",
-            "description": (
-                "Create or edit a file. Three modes:\n"
-                "1. CREATE — omit old_str and start_line: writes new_str as the full file.\n"
-                "2. LINE RANGE — provide start_line (1-indexed, inclusive) and optionally end_line: "
-                "replaces those lines with new_str. Pair with read_file line numbers.\n"
-                "3. STRING REPLACE — provide old_str: finds the first match and replaces it with new_str. "
-                "Tries exact match first, then falls back to whitespace-tolerant line matching. "
-                "Always read the file before editing."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path of the file to create or edit."
-                    },
-                    "new_str": {
-                        "type": "string",
-                        "description": "Replacement content. For CREATE, the full file. For edits, the new block."
-                    },
-                    "old_str": {
-                        "type": "string",
-                        "description": "String to find and replace (mode 3). Omit or use '' for CREATE."
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "description": "First line to replace, 1-indexed inclusive (mode 2)."
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "description": "Last line to replace, 1-indexed inclusive (mode 2). Defaults to start_line."
-                    }
-                },
-                "required": ["path", "new_str"]
+                "required": ["command"]
             }
         }
     }
@@ -679,12 +371,200 @@ def build_openai_tools(
     return tools
 
 
+# ── Tool categories + router ──────────────────────────────────────────────────
+# v2.4.0: the only direct tool is `terminal`. Router categories now map onto
+# the optional capability tools (memory, skills, subagents) plus the always-on
+# terminal. The router's job is reduced to deciding which OPT-IN tool groups
+# to expose for the current turn.
+TOOL_CATEGORIES: Dict[str, List[str]] = {
+    "terminal": ["terminal"],
+    "memory": ["save_memory", "search_memory", "retrieve_code", "summarize_session", "offload_large_output"],
+    "skills": ["activate_skill"],
+    "subagents": ["call_subagent"],
+}
+
+CATEGORY_DESCRIPTIONS: Dict[str, str] = {
+    "terminal": "Execute shell commands inside the sandbox (the agent's primary tool).",
+    "memory": "Persist, search, and recall long-term knowledge across sessions.",
+    "skills": "Load specialized instruction sets (skills) into the agent context.",
+    "subagents": "Delegate research/analysis tasks to specialized subagents (run in parallel).",
+}
+
+CATEGORY_ORDER: List[str] = [
+    "terminal",
+    "memory",
+    "subagents",
+    "skills",
+]
+
+ROUTER_SYSTEM_PROMPT = """You are a tool router for an AI coding agent.
+
+Your job: look at the user's message and pick the MINIMUM set of OPT-IN tool
+categories the main agent will need. The agent always has the `terminal` tool
+(shell access) regardless of what you return — your decision only governs the
+optional capability tools (memory, skills, subagents). This keeps costs and
+latency down.
+
+Available opt-in categories:
+{categories}
+
+Rules:
+- For simple chat (greetings, explanations, theory questions with no file/code work),
+  return an empty list. The main agent can answer without any opt-in tools.
+- For almost every coding task (reading files, searching, editing, running
+  commands, debugging, refactoring) the agent only needs `terminal` — do NOT
+  return `terminal`; it is always on. Return an empty list.
+- Add "memory" only if the user asks to remember, recall, or persist something
+  across sessions.
+- Add "subagents" only if the task clearly benefits from parallel research
+  (e.g. "explore the repo and summarize modules", "compare how X is done in
+  several places"). A normal "fix this bug" does NOT need subagents.
+- Add "skills" only if the user explicitly asks for a known skill or the task
+  is a clear match for a loaded skill.
+- Prefer an empty list over speculative categories. If unsure, return [].
+
+Respond with ONLY a JSON object, no prose, no markdown fences:
+{{"categories": ["subagents"]}}
+"""
+
+
+def categories_to_tool_names(categories: List[str]) -> List[str]:
+    """Expand category names to the underlying tool names, preserving order and dedup."""
+    seen: set = set()
+    out: List[str] = []
+    for cat in categories:
+        for tool_name in TOOL_CATEGORIES.get(cat, []):
+            if tool_name not in seen:
+                seen.add(tool_name)
+                out.append(tool_name)
+    return out
+
+
+def filter_tools(
+    tools: List[Dict[str, Any]],
+    allowed_names: Optional[set],
+) -> List[Dict[str, Any]]:
+    """Return only tools whose function name is in allowed_names. None = keep all."""
+    if allowed_names is None:
+        return tools
+    return [t for t in tools if t.get("function", {}).get("name") in allowed_names]
+
+
+def parse_router_response(text: str) -> List[str]:
+    """Extract the categories list from a router model response.
+
+    Tolerates prose, markdown fences, and partial JSON. Falls back to scanning
+    the text for known category names if no JSON object is found.
+    """
+    if not text:
+        return []
+    candidate = text.strip()
+
+    # Strip markdown code fences if present.
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+
+    # Try to find a JSON object containing a "categories" key.
+    import re
+    match = re.search(r"\{[^{}]*\"categories\"[^{}]*\[.*?\][^{}]*\}", candidate, re.DOTALL)
+    if not match:
+        match = re.search(r"\{.*?\"categories\".*?\}", candidate, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            cats = data.get("categories", [])
+            if isinstance(cats, list):
+                return [str(c).strip() for c in cats if isinstance(c, (str, int))]
+        except Exception:
+            pass
+
+    # Last-resort fallback: substring match for known category names.
+    lowered = candidate.lower()
+    found: List[str] = []
+    for cat in TOOL_CATEGORIES:
+        if cat in lowered and cat not in found:
+            found.append(cat)
+    return found
+
+
 # ── System prompt ─────────────────────────────────────────────────────────────
+_CATEGORY_SECTION_TEXT: Dict[str, str] = {
+    "terminal": (
+        "TERMINAL (your only direct tool — use it for everything):\n"
+        "- terminal – run a shell command inside the sandbox. Use it for `ls`/`dir`, `cat`/`type`, `find`, "
+        "`grep -rn`, `sed`, `git`, `python -c`, `pytest`, `npm`, `pip`, etc. Combine steps with `&&` or `;` "
+        "or pipes so a single call replaces many separate calls. cwd defaults to the sandbox root."
+    ),
+    "memory": (
+        "MEMORY (opt-in):\n"
+        "- save_memory, search_memory, retrieve_code, summarize_session, offload_large_output"
+    ),
+    "subagents": (
+        "SUBAGENTS (opt-in):\n"
+        "- call_subagent – delegate tasks to specialized subagents (call multiple times to run in parallel)"
+    ),
+    "skills": (
+        "SKILLS (opt-in):\n"
+        "- activate_skill – load skill instructions when available skills match the task"
+    ),
+}
+
+_SUBAGENTS_BEHAVIORAL_PARAGRAPH = """
+SUBAGENTS:
+- Use call_subagent to delegate research, exploration, or analysis to a specialized agent.
+- Call call_subagent multiple times in the same response to run subagents IN PARALLEL — all run
+  concurrently and their results are returned together before you continue.
+- Use subagents when you need to gather context from multiple parts of the codebase at once,
+  or when exploration and analysis can happen independently before you act.
+"""
+
+
+_TERMINAL_AWARE_PARAGRAPH = """
+TERMINAL IS YOUR ONLY DIRECT TOOL:
+- `terminal` runs a shell command (bash on POSIX, cmd.exe on Windows) inside the sandbox.
+- It is the ONLY way you can read, list, search, or modify files. There are no dedicated
+  read_file / edit_file / list_files / grep tools. Use shell one-liners for all of them.
+
+Common recipes:
+  - listing or exploring the tree:        `ls -la` / `dir`, `find . -name "*.py" | head -50`
+  - quick file peek:                      `cat path/to/file.py` (small files only)
+  - paged file read:                      `sed -n '1,200p' path/to/file.py` or `head -n 200 file.py`
+  - content search:                       `grep -rn "def foo" src/ --include="*.py"`
+  - file name search:                     `find . -name "*.py" -not -path "*/.venv/*"`
+  - apply a string replace:               `python -c "import pathlib; p=pathlib.Path('f'); p.write_text(p.read_text().replace('old','new'))"`
+  - in-place sed:                         `sed -i 's/old/new/g' file` (POSIX) or `python -c "..."` (Windows)
+  - create a new file:                    `printf 'content' > new_file` or `python -c "open('f','w').write('content')"`
+  - git status / diff / log:              `git status && git diff --stat`
+  - environment / tool versions:          `python --version && pip list | head -30`
+  - running a script or test:             `pytest -x -q tests/`
+
+Combine steps with `&&`, `;`, or pipes so a single terminal call replaces many separate calls.
+The `terminal` tool's stdout/stderr are captured and truncated to ~8000 chars; anything longer is
+saved to `.indusbuilt/terminal_offload/` and the path is returned in the result.
+
+IMPORTANT: every terminal command runs sandboxed to the project root. Absolute paths outside the
+sandbox are rejected.
+"""
+
+
 def build_system_prompt(
     sandbox_root: Path,
     skill_registry: Optional[SkillRegistry] = None,
     subagent_registry: Optional[SubAgentRegistry] = None,
+    active_categories: Optional[List[str]] = None,
 ) -> str:
+    """Build the agent system prompt.
+
+    `active_categories` controls which OPT-IN capability sections are included
+    on top of the always-on `terminal` tool. Pass None (or a list containing
+    "terminal") to keep the legacy behavior. Note: as of v2.4.0 the only direct
+    tool is `terminal`; the router now only governs memory / skills / subagents.
+    """
     prompt = f"""You are IndusBuilt, an expert coding assistant.
 
 Sandbox directory: {sandbox_root}
@@ -692,42 +572,23 @@ Sandbox directory: {sandbox_root}
 IMPORTANT RULES:
 - You can ONLY read, list, or edit files INSIDE the sandbox directory above.
 - Never attempt to access files outside of the sandbox.
+- Your only direct tool is `terminal` — use shell one-liners for reading,
+  searching, and modifying files. There are no dedicated read/edit/grep tools.
 - When creating code, follow best practices and write clean, documented code.
-- Always read a file before editing it unless you are creating a new one.
-- Chain tool calls as needed to complete tasks (read → understand → edit).
+- Before modifying a file, peek at it (`cat` or `sed -n`) to understand its shape.
+- Chain terminal calls as needed to complete tasks.
 - When done, give a clear summary of what you changed.
-
-SUBAGENTS:
-- Use call_subagent to delegate research, exploration, or analysis to a specialized agent.
-- Call call_subagent multiple times in the same response to run subagents IN PARALLEL — all run
-  concurrently and their results are returned together before you continue.
-- Use subagents when you need to gather context from multiple parts of the codebase at once,
-  or when exploration and analysis can happen independently before you act.
-
-NAVIGATION (use these to find the right files before reading):
-- tree         – full recursive project structure at a glance (start here for unfamiliar codebases)
-- search_files – find files by name/glob pattern (e.g. '**/*.py', 'config.*')
-- grep         – search file contents by string/regex, returns file+line (find where a function is defined, etc.)
-- list_files   – single-directory listing
-
-READING:
-- read_file    – read one file (50 lines default, use offset/limit to page through large files)
-- read_files   – read multiple files in one call (use after navigation to load relevant files)
-
-EDITING:
-- edit_file    – create files or patch with string-replace or line-range replace
-
-MEMORY:
-- save_memory, search_memory, retrieve_code, summarize_session, offload_large_output
-
-SUBAGENTS:
-- call_subagent – delegate tasks to specialized subagents (call multiple times to run in parallel)
-
-WORKFLOW for large codebases:
-1. tree / search_files / grep  → identify relevant files
-2. read_files                  → load them all at once
-3. edit_file                   → make changes
 """
+    prompt += _TERMINAL_AWARE_PARAGRAPH
+
+    active = set(active_categories) if active_categories is not None else set(CATEGORY_ORDER)
+
+    if "subagents" in active:
+        prompt += _SUBAGENTS_BEHAVIORAL_PARAGRAPH
+
+    for cat in CATEGORY_ORDER:
+        if cat in active and cat in _CATEGORY_SECTION_TEXT:
+            prompt += "\n" + _CATEGORY_SECTION_TEXT[cat] + "\n"
 
     if subagent_registry is not None:
         catalog = subagent_registry.catalog_prompt()
@@ -818,6 +679,7 @@ SLASH_COMMANDS: List[Dict[str, str]] = [
     {"name": "provider",   "description": "Switch the active provider",       "arg": ""},
     {"name": "model",      "description": "Choose model for the provider",    "arg": ""},
     {"name": "show",       "description": "Show current provider + model",    "arg": ""},
+    {"name": "router",     "description": "Router: show/on/off/provider/model", "arg": "<action>"},
     {"name": "memory",     "description": "Memory: status/search/summarize/rebuild", "arg": "<action>"},
     {"name": "skills",     "description": "List or load a skill",             "arg": "[name]"},
     {"name": "subagents",  "description": "List or inspect a subagent",       "arg": "[name]"},
@@ -963,11 +825,19 @@ class AgentController:
         model = get_model(self.settings, provider)
         subagent_model = get_subagent_model(self.settings, provider)
         api_key = _get_effective_api_key(self.settings, provider)
+        router_enabled = get_router_enabled(self.settings)
+        router_provider = get_router_provider(self.settings)
+        router_model = get_router_model(self.settings, router_provider)
+        router_api_key = _get_effective_api_key(self.settings, router_provider) if router_enabled else ""
         return {
             "provider": provider,
             "model": model,
             "subagent_model": subagent_model,
             "api_key": api_key,
+            "router_enabled": "1" if router_enabled else "0",
+            "router_provider": router_provider,
+            "router_model": router_model,
+            "router_api_key": router_api_key,
         }
 
     def _hook_sink(self, hook_result) -> None:
@@ -1011,6 +881,37 @@ class AgentController:
         idx = self._ask_choice(f"Select SubAgent Model ({provider})", labels)
         if idx < 0 or idx >= len(choices):
             return None
+        return choices[idx]
+
+    def _select_router_provider_interactive(self, current_provider: str) -> Optional[str]:
+        labels = []
+        provider_options: List[Optional[str]] = []
+        for provider in PROVIDERS:
+            labels.append(
+                f"{provider} {'(active)' if provider == current_provider else ''}".rstrip()
+            )
+            provider_options.append(provider)
+        labels.append(f"(follow main provider) {'(active)' if not current_provider else ''}".rstrip())
+        provider_options.append(None)
+        idx = self._ask_choice("Select Router Provider", labels)
+        if idx < 0 or idx >= len(provider_options):
+            return None
+        return provider_options[idx]  # type: ignore[return-value]
+
+    def _select_router_model_interactive(self, provider: str, current_model: str) -> Optional[str]:
+        choices = ROUTER_MODEL_CHOICES.get(provider, [current_model])
+        labels = [
+            f"{model} {'(current)' if model == current_model else ''}".rstrip()
+            for model in choices
+        ]
+        labels.append(
+            f"(follow main model) {'(current)' if not current_model or current_model == get_model(self.settings, provider) else ''}".rstrip()
+        )
+        idx = self._ask_choice(f"Select Router Model ({provider})", labels)
+        if idx < 0 or idx >= len(choices) + 1:
+            return None
+        if idx == len(choices):
+            return ""
         return choices[idx]
 
     def _set_key_interactive(self, provider: Optional[str] = None) -> None:
@@ -1119,9 +1020,15 @@ class AgentController:
 
         if raw.startswith("/show"):
             state = self._refresh_runtime_state()
+            router_status = (
+                f"enabled ({state['router_provider']}/{state['router_model']})"
+                if state["router_enabled"] == "1"
+                else "disabled"
+            )
             self._emit(Info(
                 f"Provider: {state['provider']}  |  Model: {state['model']}  |  "
-                f"SubAgent Model: {state['subagent_model']}"
+                f"SubAgent Model: {state['subagent_model']}  |  "
+                f"Router: {router_status}"
             ))
             return
 
@@ -1137,6 +1044,10 @@ class AgentController:
                 set_subagent_model(self.settings, provider, selected_sa_model)
                 save_settings(self.settings)
                 self._emit(Success(f"SubAgent model for {provider} set to {selected_sa_model}."))
+            return
+
+        if raw.startswith("/router"):
+            self._router_flow(raw_command)
             return
 
         if raw.startswith("/subagents"):
@@ -1388,7 +1299,7 @@ class AgentController:
             return
         hook_type = types[type_idx]
 
-        matcher = self._ask_input("Matcher regex (leave empty for all tools)", "e.g. edit_file") or None
+        matcher = self._ask_input("Matcher regex (leave empty for all tools)", "e.g. ^terminal$") or None
         command_str = None
         prompt_str = None
         model_str = None
@@ -1429,12 +1340,249 @@ class AgentController:
             return
         self._emit(Success(f"Created hook '{result['name']}' at {result['path']}"))
 
+    # ── Router flow ──────────────────────────────────────────────────────────
+    def _router_flow(self, command: str) -> None:
+        """Handle the /router slash command.
+
+        Sub-commands: show | on | off | provider | model
+        """
+        parts = command.strip().split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else "show"
+        action = arg.lower().split()[0] if arg else "show"
+
+        state = self._refresh_runtime_state()
+
+        if action in ("show", "status"):
+            enabled = state["router_enabled"] == "1"
+            provider = state["router_provider"]
+            model = state["router_model"]
+            api_key_present = bool(state["router_api_key"])
+            status_text = "enabled" if enabled else "disabled"
+            provider_text = provider if provider else f"(follow main → {get_active_provider(self.settings)})"
+            model_text = model if model else f"(follow main → {state['model']})"
+            self._emit(Info(
+                f"Router: {status_text}\n"
+                f"  Provider: {provider_text}\n"
+                f"  Model:    {model_text}\n"
+                f"  API key:  {'present' if api_key_present else 'MISSING'}\n"
+                f"  Tip: set a cheap/fast model (e.g. gpt-4o-mini, claude-haiku, gemini-flash-lite)"
+                f" to keep routing costs near zero."
+            ))
+            return
+
+        if action == "on":
+            set_router_enabled(self.settings, True)
+            save_settings(self.settings)
+            self._emit(Success("Router enabled. Tool categories will be selected per user turn."))
+            return
+
+        if action == "off":
+            set_router_enabled(self.settings, False)
+            save_settings(self.settings)
+            self._emit(Success("Router disabled. Main agent now sees all tools on every turn."))
+            return
+
+        if action == "provider":
+            current_provider = get_router_provider(self.settings)
+            selected = self._select_router_provider_interactive(current_provider)
+            if selected is None:
+                return
+            set_router_provider(self.settings, selected)
+            save_settings(self.settings)
+            resolved = selected or "(follow main)"
+            self._emit(Success(f"Router provider set to {resolved}."))
+            return
+
+        if action == "model":
+            current_provider = get_router_provider(self.settings)
+            current_model = get_router_model(self.settings, current_provider)
+            selected_model = self._select_router_model_interactive(current_provider, current_model)
+            if selected_model is None:
+                return
+            set_router_model(self.settings, current_provider, selected_model)
+            save_settings(self.settings)
+            resolved = selected_model or "(follow main model)"
+            self._emit(Success(f"Router model for {current_provider} set to {resolved}."))
+            return
+
+        self._emit(Warning(
+            f"Unknown /router action: '{action}'. Use: show | on | off | provider | model"
+        ))
+
+    # ── Router core ─────────────────────────────────────────────────────────
+    def _route_tools(
+        self,
+        user_message: str,
+        state: Dict[str, str],
+        rerouted: bool = False,
+        requested_missing: Optional[List[str]] = None,
+    ) -> Tuple[Optional[set], List[str], str, str]:
+        """Decide which tool categories the main agent needs for `user_message`.
+
+        Returns a tuple of:
+            (allowed_tool_names_or_None, categories, router_provider, router_model)
+
+        `allowed_tool_names_or_None` is None when the router is disabled or
+        something went wrong — meaning the main agent should see ALL tools.
+
+        Emits a RouterDecision event so the UI can surface what was chosen.
+        """
+        if state["router_enabled"] != "1":
+            return None, [], "", ""
+
+        router_provider = state["router_provider"]
+        router_model = state["router_model"]
+        router_api_key = state["router_api_key"]
+
+        if not router_api_key:
+            self._emit(Warning(
+                f"Router enabled but no API key for provider '{router_provider}'. "
+                f"Falling back to all tools. Use /router show to inspect."
+            ))
+            self._emit(RouterDecision(
+                user_message=user_message,
+                categories=[],
+                tool_names=[],
+                provider=router_provider,
+                model=router_model,
+                error="missing_api_key",
+                rerouted=rerouted,
+            ))
+            return None, [], router_provider, router_model
+
+        validation_error = _validate_api_key(router_provider, router_api_key)
+        if validation_error:
+            self._emit(Warning(
+                f"Router API key for '{router_provider}' looks invalid: {validation_error}. "
+                f"Falling back to all tools."
+            ))
+            self._emit(RouterDecision(
+                user_message=user_message,
+                categories=[],
+                tool_names=[],
+                provider=router_provider,
+                model=router_model,
+                error=validation_error,
+                rerouted=rerouted,
+            ))
+            return None, [], router_provider, router_model
+
+        # Build the system prompt describing categories.
+        category_lines = "\n".join(
+            f"- {cat}: {CATEGORY_DESCRIPTIONS[cat]}" for cat in CATEGORY_ORDER
+        )
+        router_system = ROUTER_SYSTEM_PROMPT.format(categories=category_lines)
+
+        # Build the user message for the router. On re-route, hint that some
+        # tools were already requested and the main agent needs access to them.
+        router_user = f"User message:\n{user_message}"
+        if rerouted and requested_missing:
+            missing_str = ", ".join(requested_missing)
+            router_user += (
+                f"\n\nNote: the main agent already tried to call these tools "
+                f"and they were NOT in the previously-granted set: {missing_str}. "
+                f"Expand the categories so these tools are included."
+            )
+
+        start = time.time()
+        try:
+            response = completion(
+                model=_provider_model_ref(router_provider, router_model),
+                messages=[
+                    {"role": "system", "content": router_system},
+                    {"role": "user", "content": router_user},
+                ],
+                api_key=router_api_key,
+            )
+        except Exception as exc:
+            elapsed = time.time() - start
+            self._emit(Warning(
+                f"Router call to {router_provider}/{router_model} failed: {exc}. "
+                f"Falling back to all tools."
+            ))
+            self._emit(RouterDecision(
+                user_message=user_message,
+                categories=[],
+                tool_names=[],
+                provider=router_provider,
+                model=router_model,
+                elapsed_s=elapsed,
+                error=str(exc),
+                rerouted=rerouted,
+            ))
+            return None, [], router_provider, router_model
+
+        elapsed = time.time() - start
+        text: str = ""
+        try:
+            text = (response.choices[0].message.content or "") if getattr(response, "choices", None) else ""
+        except Exception:
+            text = ""
+
+        categories = parse_router_response(text)
+        # Sanitize: keep only known categories, in canonical order, deduped.
+        seen: set = set()
+        clean_categories: List[str] = []
+        for cat in CATEGORY_ORDER:
+            if cat in categories and cat not in seen:
+                seen.add(cat)
+                clean_categories.append(cat)
+        # Anything the router returned that wasn't a known category is dropped.
+
+        tool_names = categories_to_tool_names(clean_categories)
+        allowed_set = set(tool_names) if clean_categories else set()
+
+        # If on re-route we learned about missing tools, make sure they're covered.
+        if rerouted and requested_missing:
+            missing_set = set(requested_missing)
+            if not missing_set.issubset(allowed_set):
+                # Add the categories that contain the missing tools.
+                for tool_name in missing_set:
+                    for cat, tools in TOOL_CATEGORIES.items():
+                        if tool_name in tools and cat not in clean_categories:
+                            clean_categories.append(cat)
+                            allowed_set.update(tools)
+                # Re-sort categories in canonical order for stable output.
+                clean_categories = [c for c in CATEGORY_ORDER if c in clean_categories]
+                tool_names = categories_to_tool_names(clean_categories)
+                allowed_set = set(tool_names)
+
+        self._emit(RouterDecision(
+            user_message=user_message,
+            categories=list(clean_categories),
+            tool_names=list(tool_names),
+            provider=router_provider,
+            model=router_model,
+            elapsed_s=elapsed,
+            rerouted=rerouted,
+        ))
+
+        return (allowed_set if allowed_set else None), list(clean_categories), router_provider, router_model
+
     # ── Streaming ───────────────────────────────────────────────────────────
-    def _stream_model_turn(self) -> Dict[str, Any]:
+    def _stream_model_turn(
+        self,
+        allowed_tools: Optional[set] = None,
+        active_categories: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         state = self._refresh_runtime_state()
         validation_error = _validate_api_key(state["provider"], state["api_key"])
         if validation_error:
             raise ValueError(validation_error)
+
+        all_tools = build_openai_tools(
+            self.skill_registry,
+            context_manager=self.context_manager,
+            subagent_registry=self.subagent_registry,
+        )
+        tools = filter_tools(all_tools, allowed_tools)
+
+        system_prompt = build_system_prompt(
+            self.sandbox_root,
+            self.skill_registry,
+            self.subagent_registry,
+            active_categories=active_categories,
+        )
 
         self._emit(Thinking(label="thinking"))
         streamed_text_parts: List[str] = []
@@ -1445,16 +1593,10 @@ class AgentController:
             stream = completion(
                 model=_provider_model_ref(state["provider"], state["model"]),
                 messages=self.context_manager.build_messages(
-                    system_prompt=build_system_prompt(
-                        self.sandbox_root, self.skill_registry, self.subagent_registry
-                    ),
+                    system_prompt=system_prompt,
                     conversation=self.conversation,
                 ),
-                tools=build_openai_tools(
-                    self.skill_registry,
-                    context_manager=self.context_manager,
-                    subagent_registry=self.subagent_registry,
-                ),
+                tools=tools,
                 stream=True,
                 api_key=state["api_key"],
             )
@@ -1584,8 +1726,6 @@ class AgentController:
                 elapsed_s=elapsed,
             ))
 
-            self._emit_code_diff_if_any(tool_name, args, result)
-
             if "error" in result:
                 self.hook_registry.execute_hooks(
                     HookEvent.PostToolUseFailure,
@@ -1630,34 +1770,6 @@ class AgentController:
         if results and getattr(results[0], "reason", None):
             return results[0].reason
         return "blocked by hook"
-
-    def _emit_code_diff_if_any(self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
-        if tool_name != "edit_file":
-            return
-        if "error" in result:
-            return
-        path = result.get("path")
-        action = result.get("action")
-        if not path or action not in ("created_file", "edited"):
-            return
-        try:
-            new_content = Path(path).read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            new_content = ""
-
-        before = ""
-        old_str = args.get("old_str", "")
-        new_str = args.get("new_str", "")
-        if action == "edited" and old_str:
-            before = old_str
-        diff_text = _format_diff(before, new_str or new_content, max_lines=80)
-        self._emit(CodeDiff(
-            path=str(path),
-            action=action,
-            before=before or None,
-            after=new_str or new_content,
-            diff_text=diff_text,
-        ))
 
     def _execute_subagent_calls(self, subagent_tcs: List[Dict[str, Any]]) -> Dict[str, Any]:
         state = self._refresh_runtime_state()
@@ -1764,6 +1876,9 @@ class AgentController:
             skills=[s.name for s in self.skill_registry.list_skills()],
             subagents=[a.name for a in self.subagent_registry.list_agents()],
             hooks=[h.name for h in self.hook_registry.list_hooks()],
+            router_enabled=state["router_enabled"] == "1",
+            router_provider=state["router_provider"],
+            router_model=state["router_model"],
         ))
 
         # Session start hooks
@@ -1831,12 +1946,23 @@ class AgentController:
                     "content": f"[Hook context] {user_prompt_hook['additional_context']}",
                 })
 
+            # Initial tool routing for this user turn
+            turn_state = self._refresh_runtime_state()
+            allowed_tools, active_categories, _r_provider, _r_model = self._route_tools(
+                stripped, turn_state, rerouted=False
+            )
+            reroute_count = 0
+            max_reroutes = 2
+
             # Inner agentic loop
             while True:
                 if self._cancelled.is_set():
                     break
                 try:
-                    turn = self._stream_model_turn()
+                    turn = self._stream_model_turn(
+                        allowed_tools=allowed_tools,
+                        active_categories=active_categories,
+                    )
                 except Exception as e:
                     self._emit(ErrorEvent(f"Provider API error: {e}"))
                     break
@@ -1859,6 +1985,33 @@ class AgentController:
                         ui_callback=self._hook_sink,
                     )
                     break
+
+                # If the router is filtering tools and the model requested a tool
+                # that wasn't granted, re-route (up to max_reroutes times) so the
+                # next turn has the right tool set. Without this, the user would
+                # have to re-prompt to unlock additional categories.
+                if (
+                    allowed_tools is not None
+                    and reroute_count < max_reroutes
+                ):
+                    requested = {
+                        tc.get("function", {}).get("name", "")
+                        for tc in tool_calls
+                    }
+                    missing = sorted(requested - allowed_tools)
+                    if missing:
+                        reroute_count += 1
+                        self._emit(Info(
+                            f"Re-routing to grant: {', '.join(missing)}"
+                        ))
+                        new_state = self._refresh_runtime_state()
+                        allowed_tools, active_categories, _rp, _rm = self._route_tools(
+                            stripped, new_state, rerouted=True, requested_missing=missing
+                        )
+                        # Drop the tool-call turn and re-run with the expanded set.
+                        # We do NOT add anything to the conversation here, so the
+                        # model's response is silently replaced.
+                        continue
 
                 self.conversation.append({
                     "role": "assistant",
